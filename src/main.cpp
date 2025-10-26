@@ -1,4 +1,12 @@
+/*
+ * BMS Charging System for 6S2P Battery Packs
+ *
+ * Main application entry point and serial console interface.
+ * See README.md for complete documentation, commands, and LED status indicators.
+ */
+
 #include "main.h"
+#include "bms.h"
 #include "dma_config.h"
 #include <STM32FreeRTOS.h>
 #include <Adafruit_NeoPixel.h>
@@ -7,341 +15,289 @@ Adafruit_NeoPixel strip = Adafruit_NeoPixel(STATUS_LED_COUNT, STATUS_LEDS, NEO_G
 
 #define DEVICE_COUNT 1
 #define CELL_COUNT 6
-bcc_device_t devices[] = {
-  BCC_DEVICE_MC33772,
+
+// BMS Configuration for BCC0 (single 6S2P pack)
+BatteryCellControllerConfig bcc0_config = {
+  .device_count = DEVICE_COUNT,
+  .cell_count = CELL_COUNT,
+  .enable_pin = BMS0_ENABLE,
+  .intb_pin = BMS0_INTB,
+  .cs_pin = BMS0_TX_CS,
+  .loopback = false
 };
 
-SPIClass bcc0_tx_spi(BMS0_TX_DATA, NC, BMS0_TX_SCK, NC);
-SPIClass bcc0_rx_spi(BMS0_RX_DATA, NC, BMS0_RX_SCK, BMS0_RX_CS);
-#if defined(BRZ_HV_ECU)
-TPLSPI bcc0_tpl(&bcc0_tx_spi, &bcc0_rx_spi, BMS0_TX_CS, configureDMA_HV_ECU);
-#else
-TPLSPI bcc0_tpl(&bcc0_tx_spi, &bcc0_rx_spi, BMS0_TX_CS);
-#endif
-BatteryCellController *bcc0;
+// Charging Configuration
+BMSChargingConfig charging_config = {
+  .target_cell_voltage = 3.6f,      // Target 3.6V per cell
+  .balance_threshold_mv = 50.0f,    // Start balancing when cells differ by 50mV
+  .balance_target_mv = 10.0f,       // Resume charging when cells differ by <10mV
+  .balancing_timer_min = 5,         // Balance for 5 minutes at a time
+  .measurement_interval_ms = 1000   // Measure voltages every second
+};
 
-// BCC1 setup
-#if defined(BRZ_HV_ECU)
-SPIClass bcc1_tx_spi(BMS1_TX_DATA, NC, BMS1_TX_SCK, NC);
-// BMS1 RX: PB4_ALT1 is SPI3_MISO - pass as MISO (2nd param) for RX-only slave mode
-SPIClass bcc1_rx_spi(NC, BMS1_RX_DATA, BMS1_RX_SCK, BMS1_RX_CS);
-TPLSPI bcc1_tpl(&bcc1_tx_spi, &bcc1_rx_spi, BMS1_TX_CS, configureDMA_HV_ECU);
-BatteryCellController *bcc1;
-#endif
+BatteryManagementSystem *bms;
 
-bcc_cid_t cid;
-bcc_status_t error;
+// Serial console task for user commands
+void console_task(void *pvParameters) {
+  Serial.println("\n=== BMS Serial Console ===");
+  Serial.println("Type 'help' for available commands");
+  Serial.println();
 
-bool init_succeeded = false;
-#if defined(BRZ_HV_ECU)
-bool init_succeeded_bcc1 = false;
-#endif
-
-// Function declarations
-bcc_status_t get_measurements(bcc_cid_t cid, uint16_t measurements[]);
-bcc_status_t printInitialSettings(bcc_cid_t cid);
-void printStackVoltages();
-
-#if defined(BRZ_HV_ECU)
-bcc_status_t printInitialSettings_bcc1(bcc_cid_t cid);
-void printStackVoltages_bcc1();
-#endif
-
-// BMS Task - handles all BCC initialization and communication
-void bms_task(void *pvParameters) {
-  delay(5000);
-  Serial.println("BMS Task: Starting BMS controller...");
-
-  // STM32 initialization
-  pinMode(BMS0_TX_CS, OUTPUT);
-  digitalWrite(BMS0_TX_CS, HIGH);
-
-  bcc0 = new BatteryCellController(&bcc0_tpl, devices, DEVICE_COUNT, CELL_COUNT, BMS0_ENABLE, BMS0_INTB, false);
-
-  Serial.println("BMS Task: Starting BCC initialization (preserving existing config)...");
-  error = bcc0->begin(nullptr);
-  if (error != BCC_STATUS_SUCCESS) {
-    Serial.printf("BMS Task: BatteryCellController initialization failed: %d\r\n", error);
-    while (true) {
-      Serial.println("BMS Task: Initialization failed...");
-      vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-  }
-  init_succeeded = true;
-
-  int startCid = static_cast<int>(BCC_CID_DEV1);
-  int endCid = startCid + DEVICE_COUNT - 1;
-
-  // Read and display all configuration registers from the battery
-  Serial.println("\n========================================");
-  Serial.println("Reading existing battery configuration...");
-  Serial.println("========================================\n");
-
-  for (int i = startCid; i <= endCid; ++i) {
-    cid = static_cast<bcc_cid_t>(i);
-    error = printInitialSettings(cid);
-    if (error != BCC_STATUS_SUCCESS) {
-      Serial.printf("Error reading config for CID %d: %d\r\n", cid, error);
-    }
-  }
-
-  Serial.println("BMS Task: Initialization complete, starting measurements...\n");
-
-  // Main BMS loop
-  unsigned long startTime = millis();
-  bool hasSentSleep = false;
+  String inputBuffer = "";
 
   while (true) {
-    unsigned long elapsedTime = millis() - startTime;
+    // Check for available serial data
+    while (Serial.available() > 0) {
+      char c = Serial.read();
 
-    if (elapsedTime >= 10000 && !hasSentSleep) {
-      // 10 seconds elapsed - put BCC to sleep
-      Serial.println("\n==============================================");
-      Serial.println("10 seconds elapsed - sending BCC to sleep...");
-      Serial.println("==============================================\n");
+      if (c == '\n' || c == '\r') {
+        if (inputBuffer.length() > 0) {
+          // Process command
+          inputBuffer.trim();
+          inputBuffer.toLowerCase();
 
-      // First, disable cyclic timer to prevent ongoing measurements
-      Serial.println("Disabling cyclic timer...");
-      error = bcc0->update_register(
-        BCC_CID_DEV1,
-        MC33771C_SYS_CFG1_OFFSET,
-        MC33771C_SYS_CFG1_CYCLIC_TIMER_MASK,
-        MC33771C_SYS_CFG1_CYCLIC_TIMER(MC33771C_SYS_CFG1_CYCLIC_TIMER_DISABLED_ENUM_VAL)
-      );
-      if (error != BCC_STATUS_SUCCESS) {
-        Serial.printf("Error disabling cyclic timer: %d\r\n", error);
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        continue;
+          if (inputBuffer == "help") {
+            Serial.println("\n=== Available Commands ===");
+            Serial.println("help                  - Show this help message");
+            Serial.println("status                - Show current BMS status");
+            Serial.println("start                 - Start charging");
+            Serial.println("stop                  - Stop charging");
+            Serial.println("balance               - Force cell balancing");
+            Serial.println("voltages              - Show current cell voltages");
+            Serial.println("config                - Show charging configuration");
+            Serial.println("set target <voltage>  - Set target cell voltage (V)");
+            Serial.println("set balance_th <mv>   - Set balance threshold (mV)");
+            Serial.println("set balance_tgt <mv>  - Set balance target (mV)");
+            Serial.println("set interval <ms>     - Set measurement interval (ms)");
+            Serial.println();
+            Serial.println("=== LED Status Indicators ===");
+            Serial.println("State LEDs (0-2):");
+            Serial.println("  Purple (solid)      - System initializing");
+            Serial.println("  Blue (breathing)    - Idle, ready to charge");
+            Serial.println("  Green (chase)       - Charging");
+            Serial.println("  Green (solid)       - Charging complete");
+            Serial.println("  Orange (pulsing)    - Cell balancing");
+            Serial.println("  Red (flashing)      - Error/Fault");
+            Serial.println();
+            Serial.println("Contactor LEDs (3-4):");
+            Serial.println("  LED 3 Yellow        - Negative contactor closed");
+            Serial.println("  LED 4 Cyan          - Positive contactor closed");
+            Serial.println("  (Off when open)");
+            Serial.println();
+          }
+          else if (inputBuffer == "status") {
+            BMS_State state = bms->get_state();
+            const char* state_str[] = {"Initialization", "Idle", "Charging", "Cell Balancing", "Cooldown", "Sleep", "Error"};
+            Serial.println("\n=== BMS Status ===");
+            Serial.printf("State: %s\r\n", state_str[state]);
+            Serial.println();
+          }
+          else if (inputBuffer == "start") {
+            Serial.println();
+            bms->start_charging();
+            Serial.println();
+          }
+          else if (inputBuffer == "stop") {
+            Serial.println();
+            bms->stop_charging();
+            Serial.println();
+          }
+          else if (inputBuffer == "balance") {
+            Serial.println();
+            bms->force_balance_cells();
+            Serial.println();
+          }
+          else if (inputBuffer == "voltages") {
+            uint32_t voltages[BCC_MAX_CELLS];
+            uint8_t count;
+            bms->get_cell_voltages(voltages, &count);
+            uint32_t stack_v = bms->get_stack_voltage();
+
+            Serial.println("\n=== Voltages ===");
+            Serial.printf("Stack: %.3f V\r\n", stack_v / 1000000.0f);
+            Serial.println();
+            for (uint8_t i = 0; i < count; i++) {
+              float voltage = voltages[i] / 1000000.0f;
+              Serial.printf("Cell %d: %.4f V\r\n", i + 1, voltage);
+            }
+
+            // Calculate and show min/max/diff
+            if (count > 0) {
+              uint32_t min_v = voltages[0];
+              uint32_t max_v = voltages[0];
+              for (uint8_t i = 1; i < count; i++) {
+                if (voltages[i] < min_v) min_v = voltages[i];
+                if (voltages[i] > max_v) max_v = voltages[i];
+              }
+              float diff_mv = (max_v - min_v) / 1000.0f;
+              Serial.printf("\nMin: %.4f V, Max: %.4f V, Diff: %.2f mV\r\n",
+                           min_v / 1000000.0f, max_v / 1000000.0f, diff_mv);
+            }
+            Serial.println();
+          }
+          else if (inputBuffer == "config") {
+            BMSChargingConfig config = bms->get_charging_config();
+            Serial.println("\n=== Charging Configuration ===");
+            Serial.printf("Target cell voltage:    %.2f V\r\n", config.target_cell_voltage);
+            Serial.printf("Balance threshold:      %.1f mV\r\n", config.balance_threshold_mv);
+            Serial.printf("Balance target:         %.1f mV\r\n", config.balance_target_mv);
+            Serial.printf("Balancing timer:        %d min\r\n", config.balancing_timer_min);
+            Serial.printf("Measurement interval:   %d ms\r\n", config.measurement_interval_ms);
+            Serial.println();
+          }
+          else if (inputBuffer.startsWith("set target ")) {
+            String value = inputBuffer.substring(11);
+            float voltage = value.toFloat();
+            if (voltage >= 2.5 && voltage <= 4.2) {
+              charging_config.target_cell_voltage = voltage;
+              bms->set_charging_config(charging_config);
+              Serial.printf("\nTarget voltage set to %.2f V\r\n\n", voltage);
+            } else {
+              Serial.println("\nError: Voltage must be between 2.5V and 4.2V\n");
+            }
+          }
+          else if (inputBuffer.startsWith("set balance_th ")) {
+            String value = inputBuffer.substring(15);
+            float threshold = value.toFloat();
+            if (threshold >= 1.0 && threshold <= 500.0) {
+              charging_config.balance_threshold_mv = threshold;
+              bms->set_charging_config(charging_config);
+              Serial.printf("\nBalance threshold set to %.1f mV\r\n\n", threshold);
+            } else {
+              Serial.println("\nError: Threshold must be between 1.0 and 500.0 mV\n");
+            }
+          }
+          else if (inputBuffer.startsWith("set balance_tgt ")) {
+            String value = inputBuffer.substring(16);
+            float target = value.toFloat();
+            if (target >= 1.0 && target <= 100.0) {
+              charging_config.balance_target_mv = target;
+              bms->set_charging_config(charging_config);
+              Serial.printf("\nBalance target set to %.1f mV\r\n\n", target);
+            } else {
+              Serial.println("\nError: Target must be between 1.0 and 100.0 mV\n");
+            }
+          }
+          else if (inputBuffer.startsWith("set interval ")) {
+            String value = inputBuffer.substring(13);
+            uint16_t interval = value.toInt();
+            if (interval >= 100 && interval <= 10000) {
+              charging_config.measurement_interval_ms = interval;
+              bms->set_charging_config(charging_config);
+              Serial.printf("\nMeasurement interval set to %d ms\r\n\n", interval);
+            } else {
+              Serial.println("\nError: Interval must be between 100 and 10000 ms\n");
+            }
+          }
+          else {
+            Serial.printf("\nUnknown command: %s\r\n", inputBuffer.c_str());
+            Serial.println("Type 'help' for available commands\n");
+          }
+
+          inputBuffer = "";
+        }
+      } else {
+        inputBuffer += c;
       }
-      Serial.println("Cyclic timer disabled.");
-
-      // Small delay to ensure the change takes effect
-      vTaskDelay(pdMS_TO_TICKS(100));
-
-      // Now send the sleep command
-      Serial.println("Sending GO2SLEEP command...");
-      error = bcc0->sleep();
-      if (error != BCC_STATUS_SUCCESS) {
-        Serial.printf("Error sending BCC to sleep: %d\r\n", error);
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        continue;
-      }
-
-      Serial.println("\nWaiting for BCC to enter sleep mode...");
-      Serial.println("According to datasheet: device resets after 1 second of no communication");
-      Serial.println("VCOM LED should turn off...");
-
-      // Per datasheet: wait >1 second with no communication
-      vTaskDelay(pdMS_TO_TICKS(1500));
-
-      Serial.println("\n==============================================");
-      Serial.println("BCC should now be in sleep/idle mode.");
-      Serial.println("VCOM LED (red) should be OFF.");
-      Serial.println("If LED is still on, device may auto-sleep after 60 seconds.");
-      Serial.println("Safe to disconnect TPL connection.");
-      Serial.println("==============================================\n");
-
-      bcc0->disable_tpl();
-
-      hasSentSleep = true;
     }
 
-    if (hasSentSleep) {
-      // Already sent sleep command, just wait
-      vTaskDelay(pdMS_TO_TICKS(1000));
-      continue;
-    }
-
-    // Read and print stack voltages
-    printStackVoltages();
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    vTaskDelay(pdMS_TO_TICKS(50)); // Check serial every 50ms
   }
-}
-
-#if defined(BRZ_HV_ECU)
-// BMS1 Task - handles second BCC initialization and communication
-void bms1_task(void *pvParameters) {
-  // Wait for BMS0 to finish initialization
-  Serial.println("BMS1 Task: Waiting for BMS0 to complete initialization...");
-  while (!init_succeeded) {
-    vTaskDelay(pdMS_TO_TICKS(100));
-  }
-
-  Serial.println("BMS1 Task: BMS0 initialized, waiting 2 seconds before starting BMS1...");
-  vTaskDelay(pdMS_TO_TICKS(2000));
-
-  Serial.println("BMS1 Task: Starting BMS controller...");
-
-  // STM32 initialization
-  pinMode(BMS1_TX_CS, OUTPUT);
-  digitalWrite(BMS1_TX_CS, HIGH);
-
-  bcc1 = new BatteryCellController(&bcc1_tpl, devices, DEVICE_COUNT, CELL_COUNT, BMS1_ENABLE, BMS1_INTB, false);
-
-  Serial.println("BMS1 Task: Starting BCC initialization (preserving existing config)...");
-  bcc_status_t error = bcc1->begin(nullptr);
-  if (error != BCC_STATUS_SUCCESS) {
-    Serial.printf("BMS1 Task: BatteryCellController initialization failed: %d\r\n", error);
-    while (true) {
-      Serial.println("BMS1 Task: Initialization failed...");
-      vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-  }
-  init_succeeded_bcc1 = true;
-
-  int startCid = static_cast<int>(BCC_CID_DEV1);
-  int endCid = startCid + DEVICE_COUNT - 1;
-
-  // Read and display all configuration registers from the battery
-  Serial.println("\n========================================");
-  Serial.println("BMS1: Reading existing battery configuration...");
-  Serial.println("========================================\n");
-
-  for (int i = startCid; i <= endCid; ++i) {
-    bcc_cid_t cid = static_cast<bcc_cid_t>(i);
-    error = printInitialSettings_bcc1(cid);
-    if (error != BCC_STATUS_SUCCESS) {
-      Serial.printf("BMS1: Error reading config for CID %d: %d\r\n", cid, error);
-    }
-  }
-
-  Serial.println("BMS1 Task: Initialization complete, starting measurements...\n");
-
-  // Main BMS loop
-  unsigned long startTime = millis();
-  bool hasSentSleep = false;
-
-  while (true) {
-    unsigned long elapsedTime = millis() - startTime;
-
-    if (elapsedTime >= 10000 && !hasSentSleep) {
-      // 10 seconds elapsed - put BCC to sleep
-      Serial.println("\n==============================================");
-      Serial.println("BMS1: 10 seconds elapsed - sending BCC to sleep...");
-      Serial.println("==============================================\n");
-
-      // First, disable cyclic timer to prevent ongoing measurements
-      Serial.println("BMS1: Disabling cyclic timer...");
-      error = bcc1->update_register(
-        BCC_CID_DEV1,
-        MC33771C_SYS_CFG1_OFFSET,
-        MC33771C_SYS_CFG1_CYCLIC_TIMER_MASK,
-        MC33771C_SYS_CFG1_CYCLIC_TIMER(MC33771C_SYS_CFG1_CYCLIC_TIMER_DISABLED_ENUM_VAL)
-      );
-      if (error != BCC_STATUS_SUCCESS) {
-        Serial.printf("BMS1: Error disabling cyclic timer: %d\r\n", error);
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        continue;
-      }
-      Serial.println("BMS1: Cyclic timer disabled.");
-
-      // Small delay to ensure the change takes effect
-      vTaskDelay(pdMS_TO_TICKS(100));
-
-      // Now send the sleep command
-      Serial.println("BMS1: Sending GO2SLEEP command...");
-      error = bcc1->sleep();
-      if (error != BCC_STATUS_SUCCESS) {
-        Serial.printf("BMS1: Error sending BCC to sleep: %d\r\n", error);
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        continue;
-      }
-
-      Serial.println("\nBMS1: Waiting for BCC to enter sleep mode...");
-      Serial.println("BMS1: According to datasheet: device resets after 1 second of no communication");
-
-      // Per datasheet: wait >1 second with no communication
-      vTaskDelay(pdMS_TO_TICKS(1500));
-
-      Serial.println("\n==============================================");
-      Serial.println("BMS1: BCC should now be in sleep/idle mode.");
-      Serial.println("BMS1: Safe to disconnect TPL connection.");
-      Serial.println("==============================================\n");
-
-      bcc1->disable_tpl();
-
-      hasSentSleep = true;
-    }
-
-    if (hasSentSleep) {
-      // Already sent sleep command, just wait
-      vTaskDelay(pdMS_TO_TICKS(1000));
-      continue;
-    }
-
-    // Read and print stack voltages
-    printStackVoltages_bcc1();
-    vTaskDelay(pdMS_TO_TICKS(1000));
-  }
-}
-#endif
-
-void contactor_fault_isr() {
-  contactor_fault = digitalRead(CONTACTOR_CONTROL_FAULT) == LOW;
-  disable_contactors();
-}
-
-void enable_contactors() {
-  digitalWrite(CONTACTOR_CONTROL_ENABLE, HIGH);
-}
-
-void disable_contactors() {
-  digitalWrite(CONTACTOR_CONTROL_ENABLE, LOW);
-}
-
-void control_contactors(bool enable_negative, bool enable_positive) {
-  if (contactor_fault) {
-    // Fault detected, disable both contactors
-    digitalWrite(NEGATIVE_CONTACTOR_CONTROL, LOW);
-    digitalWrite(POSITIVE_CONTACTOR_CONTROL, LOW);
-    return;
-  }
-
-  digitalWrite(NEGATIVE_CONTACTOR_CONTROL, enable_negative ? HIGH : LOW);
-  digitalWrite(POSITIVE_CONTACTOR_CONTROL, enable_positive ? HIGH : LOW);
 }
 
 void setup() {
+  delay(5000);
   // Initialize Serial FIRST
   Serial.begin(115200);
-  Serial.println("=== BMS System with FreeRTOS ===");
+  Serial.println("=== BMS Charging System for 6S2P Pack ===");
+  Serial.println();
 
-  Serial.println("Creating BMS task...");
+  // Initialize NeoPixel strip
+  Serial.println("Initializing status LEDs...");
+  strip.begin();
+  strip.show(); // Initialize all pixels to 'off'
 
-  pinMode(NEGATIVE_CONTACTOR_CONTROL, OUTPUT);
-  pinMode(POSITIVE_CONTACTOR_CONTROL, OUTPUT);
-  pinMode(CONTACTOR_CONTROL_ENABLE, OUTPUT);
-  pinMode(CONTACTOR_CONTROL_FAULT, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(CONTACTOR_CONTROL_FAULT), contactor_fault_isr, CHANGE);
+  // Create BMS instance (BCC1 disabled - only using BCC0 for single pack)
+  Serial.println("Creating BMS instance...");
+  bms = new BatteryManagementSystem(&bcc0_config, nullptr);
 
-  // Create BMS task with sufficient stack
-  xTaskCreate(
-    bms_task,
-    "BMS_Task",
-    2048,  // Stack size in words (8KB) - BCC needs more stack
+  // Set status LEDs
+  bms->set_status_leds(&strip);
+
+  // Configure charging parameters
+  Serial.println("Configuring charging parameters:");
+  Serial.printf("  Target cell voltage: %.2f V\r\n", charging_config.target_cell_voltage);
+  Serial.printf("  Balance threshold: %.1f mV\r\n", charging_config.balance_threshold_mv);
+  Serial.printf("  Balance target: %.1f mV\r\n", charging_config.balance_target_mv);
+  Serial.printf("  Measurement interval: %d ms\r\n", charging_config.measurement_interval_ms);
+  Serial.println();
+
+  bms->set_charging_config(charging_config);
+
+  // Configure contactor control pins
+  Serial.println("Configuring contactor control...");
+  bms->set_contactor_pins(
+    NEGATIVE_CONTACTOR_CONTROL,
+    POSITIVE_CONTACTOR_CONTROL,
+    CONTACTOR_CONTROL_ENABLE,
+    CONTACTOR_CONTROL_FAULT
+  );
+
+  // Initialize BMS (BCC hardware initialization)
+  Serial.println("Initializing BMS hardware...");
+  if (!bms->initialize(nullptr)) {
+    Serial.println("ERROR: BMS initialization failed!");
+    Serial.println("System halted.");
+    while (1) {
+      delay(1000);
+    }
+  }
+
+  Serial.println("BMS initialized successfully!");
+  Serial.println();
+
+  // Start BMS tasks
+  Serial.println("Starting BMS tasks...");
+  if (!bms->start_tasks()) {
+    Serial.println("ERROR: Failed to start BMS tasks!");
+    Serial.println("System halted.");
+    while (1) {
+      delay(1000);
+    }
+  }
+
+  Serial.println("BMS tasks started successfully!");
+  Serial.println();
+
+  // Create console task for user interaction
+  Serial.println("Starting serial console...");
+  BaseType_t result = xTaskCreate(
+    console_task,
+    "Console",
+    2048,
     NULL,
-    2,     // Priority
+    1,  // Lower priority than BMS tasks
     NULL
   );
 
-// #if defined(BRZ_HV_ECU)
-//   Serial.println("Creating BMS1 task...");
+  if (result != pdPASS) {
+    Serial.println("ERROR: Failed to create console task!");
+    Serial.println("System halted.");
+    while (1) {
+      delay(1000);
+    }
+  }
 
-//   // Create BMS1 task with sufficient stack
-//   xTaskCreate(
-//     bms1_task,
-//     "BMS1_Task",
-//     2048,  // Stack size in words (8KB) - BCC needs more stack
-//     NULL,
-//     2,     // Priority
-//     NULL
-//   );
-// #endif
+  Serial.println();
+  Serial.println("===========================================");
+  Serial.println("System ready!");
+  Serial.println("Type 'help' for available commands");
+  Serial.println("Type 'start' to begin charging");
+  Serial.println("===========================================");
+  Serial.println();
 
+  // Start the FreeRTOS scheduler
   Serial.println("Starting FreeRTOS scheduler...");
-  Serial.println("Note: Serial output will continue from BMS tasks\n");
-
-  // Start the scheduler - THIS NEVER RETURNS
   vTaskStartScheduler();
 
   // Should never reach here
@@ -352,296 +308,3 @@ void setup() {
 void loop() {
   // Empty - FreeRTOS tasks run instead
 }
-
-bcc_status_t get_measurements(bcc_cid_t cid, uint16_t measurements[])
-{
-  bool completed;
-  bcc_status_t error;
-
-  /* Start conversion. */
-  error = bcc0->start_conversion_async(cid);
-  if (error != BCC_STATUS_SUCCESS)
-    return error;
-
-  /* Wait for completion. */
-  delayMicroseconds(600);
-
-  /* Check the conversion is complete. */
-  do
-  {
-    error = bcc0->is_converting(cid, &completed);
-    if (error != BCC_STATUS_SUCCESS)
-      return error;
-  } while (!completed);
-
-  /* Read measured values. */
-  return bcc0->get_raw_values(cid, measurements);
-}
-
-bcc_status_t printInitialSettings(bcc_cid_t cid)
-{
-  uint64_t guid;
-  uint16_t regVal;
-  uint8_t i;
-  static char* printPattern = "  | %-18s | 0x%02X%02X |\r\n";
-  bcc_status_t error;
-
-  Serial.printf("###############################################\r\n");
-  Serial.printf("# CID %d (MC3377%s): Initial value of registers\r\n", cid,
-          (devices[cid - 1] == BCC_DEVICE_MC33771) ?
-                  "1" : "2");
-  Serial.printf("###############################################\r\n\r\n");
-
-  Serial.printf("  -------------------------------\r\n");
-  Serial.printf("  | Register           | Value  |\r\n");
-  Serial.printf("  -------------------------------\r\n");
-
-  error = bcc0->read_register(cid, BCC_REG_INIT_ADDR, 1U, &regVal);
-  if (error != BCC_STATUS_SUCCESS) {
-    Serial.printf("Error reading register INIT (CID %d): %d\r\n", cid, error);
-    return error;
-  }
-
-  Serial.printf(printPattern, "INIT", regVal >> 8, regVal & 0xFFU);
-
-  if (devices[cid - 1] == BCC_DEVICE_MC33771)
-  {
-    for (i = 0U; i < REG_CONF_CNT_MC33771; i++)
-    {
-      error = bcc0->read_register(cid, BCC_REGISTERS_DATA_MC33771[i].address, 1U, &regVal);
-      if (error != BCC_STATUS_SUCCESS) {
-        Serial.printf("Error reading register %s (CID %d): %d\r\n",
-                      BCC_REGISTERS_DATA_MC33771[i].name, cid, error);
-        return error;
-      }
-      Serial.printf(printPattern, BCC_REGISTERS_DATA_MC33771[i].name, regVal >> 8, regVal & 0xFFU);
-    }
-  }
-  else
-  {
-    for (i = 0U; i < REG_CONF_CNT_MC33772; i++)
-    {
-      error = bcc0->read_register(cid, BCC_REGISTERS_DATA_MC33772[i].address, 1U, &regVal);
-      if (error != BCC_STATUS_SUCCESS)
-      {
-        Serial.printf("Error reading register %s (CID %d): %d\r\n",
-                      BCC_REGISTERS_DATA_MC33772[i].name, cid, error);
-        return error;
-      }
-      Serial.printf(printPattern, BCC_REGISTERS_DATA_MC33772[i].name, regVal >> 8, regVal & 0xFFU);
-    }
-  }
-
-  Serial.printf("  ----------------------------------\r\n");
-  Serial.printf("\r\n");
-
-  Serial.printf("  ------------------------\r\n");
-  Serial.printf("  | Fuse Mirror | Value  |\r\n");
-  Serial.printf("  |  Register   |        |\r\n");
-  Serial.printf("  ------------------------\r\n");
-  for (i = 0U; i <= ((devices[cid - 1] == BCC_DEVICE_MC33771) ?
-    BCC_LAST_FUSE_ADDR_MC33771B : BCC_LAST_FUSE_ADDR_MC33772B); i++)
-  {
-    error = bcc0->read_fuse_mirror(cid, i, &regVal);
-    if (error != BCC_STATUS_SUCCESS)
-      return error;
-
-    Serial.printf("  | $%02X\t| 0x%02X%02X |\r\n", i, regVal >> 8, regVal & 0xFFU);
-  }
-  Serial.printf("  ------------------------\r\n");
-  Serial.printf("\r\n");
-
-  error = bcc0->read_guid(cid, &guid);
-  if (error != BCC_STATUS_SUCCESS)
-    return error;
-
-  Serial.printf("  Device GUID: %02X%04X%04X\r\n",
-          (uint16_t)((guid >> 32) & 0x001FU),
-          (uint16_t)((guid >> 16) & 0xFFFFU),
-          (uint16_t)(guid & 0xFFFFU));
-  Serial.printf("\r\n");
-
-  return BCC_STATUS_SUCCESS;
-}
-
-void printStackVoltages() {
-  float stackVoltages[DEVICE_COUNT];
-  uint16_t stackMeasurements[BCC_MEAS_CNT];
-  bcc_status_t error;
-  bool completed;
-
-  // Start conversion on all devices simultaneously using global write
-  error = bcc0->start_conversion_global_async(0x0717);
-  if (error != BCC_STATUS_SUCCESS) {
-    Serial.printf("Error starting global conversion: %d\r\n", error);
-    return;
-  }
-
-  // Wait for conversion to complete (typical time is 520us)
-  delayMicroseconds(600);
-
-  // Check if conversion completed on first device (they all convert simultaneously)
-  do {
-    error = bcc0->is_converting(BCC_CID_DEV1, &completed);
-    if (error != BCC_STATUS_SUCCESS) {
-      Serial.printf("Error checking conversion status: %d\r\n", error);
-      return;
-    }
-  } while (!completed);
-
-  // Read measurements from each device
-  for (uint8_t i = 1; i <= DEVICE_COUNT; i++) {
-    cid = static_cast<bcc_cid_t>(i);
-    error = bcc0->get_raw_values(cid, stackMeasurements);
-    if (error != BCC_STATUS_SUCCESS) {
-      Serial.printf("Error getting measurements for CID %d: %d\r\n", i, error);
-      stackVoltages[i - 1] = 0.0f;
-      continue;
-    }
-
-    uint16_t rawValue = stackMeasurements[BCC_MSR_STACK_VOLT];
-    uint32_t voltageMicrovolts = BCC_GET_STACK_VOLT(rawValue);
-    stackVoltages[i - 1] = voltageMicrovolts / 1000000.0f;  // Convert uV to V
-  }
-
-  // Print results
-  Serial.println("Stack Voltages:");
-  for (uint8_t i = 0; i < DEVICE_COUNT; i++) {
-    Serial.printf("CID %d: %.3f V\r\n", i + 1, stackVoltages[i]);
-  }
-}
-
-#if defined(BRZ_HV_ECU)
-bcc_status_t printInitialSettings_bcc1(bcc_cid_t cid)
-{
-  uint64_t guid;
-  uint16_t regVal;
-  uint8_t i;
-  static char* printPattern = "  | %-18s | 0x%02X%02X |\r\n";
-  bcc_status_t error;
-
-  Serial.printf("###############################################\r\n");
-  Serial.printf("# BMS1 - CID %d (MC3377%s): Initial value of registers\r\n", cid,
-          (devices[cid - 1] == BCC_DEVICE_MC33771) ?
-                  "1" : "2");
-  Serial.printf("###############################################\r\n\r\n");
-
-  Serial.printf("  -------------------------------\r\n");
-  Serial.printf("  | Register           | Value  |\r\n");
-  Serial.printf("  -------------------------------\r\n");
-
-  error = bcc1->read_register(cid, BCC_REG_INIT_ADDR, 1U, &regVal);
-  if (error != BCC_STATUS_SUCCESS) {
-    Serial.printf("BMS1: Error reading register INIT (CID %d): %d\r\n", cid, error);
-    return error;
-  }
-
-  Serial.printf(printPattern, "INIT", regVal >> 8, regVal & 0xFFU);
-
-  if (devices[cid - 1] == BCC_DEVICE_MC33771)
-  {
-    for (i = 0U; i < REG_CONF_CNT_MC33771; i++)
-    {
-      error = bcc1->read_register(cid, BCC_REGISTERS_DATA_MC33771[i].address, 1U, &regVal);
-      if (error != BCC_STATUS_SUCCESS) {
-        Serial.printf("BMS1: Error reading register %s (CID %d): %d\r\n",
-                      BCC_REGISTERS_DATA_MC33771[i].name, cid, error);
-        return error;
-      }
-      Serial.printf(printPattern, BCC_REGISTERS_DATA_MC33771[i].name, regVal >> 8, regVal & 0xFFU);
-    }
-  }
-  else
-  {
-    for (i = 0U; i < REG_CONF_CNT_MC33772; i++)
-    {
-      error = bcc1->read_register(cid, BCC_REGISTERS_DATA_MC33772[i].address, 1U, &regVal);
-      if (error != BCC_STATUS_SUCCESS)
-      {
-        Serial.printf("BMS1: Error reading register %s (CID %d): %d\r\n",
-                      BCC_REGISTERS_DATA_MC33772[i].name, cid, error);
-        return error;
-      }
-      Serial.printf(printPattern, BCC_REGISTERS_DATA_MC33772[i].name, regVal >> 8, regVal & 0xFFU);
-    }
-  }
-
-  Serial.printf("  ----------------------------------\r\n");
-  Serial.printf("\r\n");
-
-  Serial.printf("  ------------------------\r\n");
-  Serial.printf("  | Fuse Mirror | Value  |\r\n");
-  Serial.printf("  |  Register   |        |\r\n");
-  Serial.printf("  ------------------------\r\n");
-  for (i = 0U; i <= ((devices[cid - 1] == BCC_DEVICE_MC33771) ?
-    BCC_LAST_FUSE_ADDR_MC33771B : BCC_LAST_FUSE_ADDR_MC33772B); i++)
-  {
-    error = bcc1->read_fuse_mirror(cid, i, &regVal);
-    if (error != BCC_STATUS_SUCCESS)
-      return error;
-
-    Serial.printf("  | $%02X\t| 0x%02X%02X |\r\n", i, regVal >> 8, regVal & 0xFFU);
-  }
-  Serial.printf("  ------------------------\r\n");
-  Serial.printf("\r\n");
-
-  error = bcc1->read_guid(cid, &guid);
-  if (error != BCC_STATUS_SUCCESS)
-    return error;
-
-  Serial.printf("  Device GUID: %02X%04X%04X\r\n",
-          (uint16_t)((guid >> 32) & 0x001FU),
-          (uint16_t)((guid >> 16) & 0xFFFFU),
-          (uint16_t)(guid & 0xFFFFU));
-  Serial.printf("\r\n");
-
-  return BCC_STATUS_SUCCESS;
-}
-
-void printStackVoltages_bcc1() {
-  float stackVoltages[DEVICE_COUNT];
-  uint16_t stackMeasurements[BCC_MEAS_CNT];
-  bcc_status_t error;
-  bool completed;
-
-  // Start conversion on all devices simultaneously using global write
-  error = bcc1->start_conversion_global_async(0x0717);
-  if (error != BCC_STATUS_SUCCESS) {
-    Serial.printf("BMS1: Error starting global conversion: %d\r\n", error);
-    return;
-  }
-
-  // Wait for conversion to complete (typical time is 520us)
-  delayMicroseconds(600);
-
-  // Check if conversion completed on first device (they all convert simultaneously)
-  do {
-    error = bcc1->is_converting(BCC_CID_DEV1, &completed);
-    if (error != BCC_STATUS_SUCCESS) {
-      Serial.printf("BMS1: Error checking conversion status: %d\r\n", error);
-      return;
-    }
-  } while (!completed);
-
-  // Read measurements from each device
-  for (uint8_t i = 1; i <= DEVICE_COUNT; i++) {
-    bcc_cid_t cid = static_cast<bcc_cid_t>(i);
-    error = bcc1->get_raw_values(cid, stackMeasurements);
-    if (error != BCC_STATUS_SUCCESS) {
-      Serial.printf("BMS1: Error getting measurements for CID %d: %d\r\n", i, error);
-      stackVoltages[i - 1] = 0.0f;
-      continue;
-    }
-
-    uint16_t rawValue = stackMeasurements[BCC_MSR_STACK_VOLT];
-    uint32_t voltageMicrovolts = BCC_GET_STACK_VOLT(rawValue);
-    stackVoltages[i - 1] = voltageMicrovolts / 1000000.0f;  // Convert uV to V
-  }
-
-  // Print results
-  Serial.println("BMS1 Stack Voltages:");
-  for (uint8_t i = 0; i < DEVICE_COUNT; i++) {
-    Serial.printf("BMS1 CID %d: %.3f V\r\n", i + 1, stackVoltages[i]);
-  }
-}
-#endif

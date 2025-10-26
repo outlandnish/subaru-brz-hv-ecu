@@ -3,6 +3,7 @@
 #include "SPI.h"
 #include "TPLSPI.h"
 #include "BatteryCellController.h"
+#include "taycan.h"
 
 #define Serial SerialUSB
 
