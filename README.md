@@ -56,6 +56,7 @@ The system uses 5 NeoPixels divided into two groups:
 | `status` | Display current BMS state |
 | `voltages` | Show stack voltage and individual cell voltages with statistics |
 | `config` | Display current charging configuration |
+| `dump` | Dump all BCC configuration registers (for debugging) |
 
 ### Control Commands
 

@@ -65,6 +65,7 @@ void console_task(void *pvParameters) {
             Serial.println("balance               - Force cell balancing");
             Serial.println("voltages              - Show current cell voltages");
             Serial.println("config                - Show charging configuration");
+            Serial.println("dump                  - Dump all BCC registers");
             Serial.println("set target <voltage>  - Set target cell voltage (V)");
             Serial.println("set balance_th <mv>   - Set balance threshold (mV)");
             Serial.println("set balance_tgt <mv>  - Set balance target (mV)");
@@ -144,6 +145,10 @@ void console_task(void *pvParameters) {
             Serial.printf("Balancing timer:        %d min\r\n", config.balancing_timer_min);
             Serial.printf("Measurement interval:   %d ms\r\n", config.measurement_interval_ms);
             Serial.println();
+          }
+          else if (inputBuffer == "dump") {
+            Serial.println();
+            bms->dump_registers();
           }
           else if (inputBuffer.startsWith("set target ")) {
             String value = inputBuffer.substring(11);

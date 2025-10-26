@@ -156,5 +156,8 @@ class BatteryManagementSystem {
     void get_cell_voltages(uint32_t *voltages, uint8_t *count);
     uint32_t get_stack_voltage() const { return stack_voltage_uv; }
 
+    // Register dump
+    void dump_registers();
+
     BMS_State enable_sleep_mode();
 };

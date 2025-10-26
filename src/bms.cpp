@@ -524,6 +524,91 @@ void BatteryManagementSystem::get_cell_voltages(uint32_t *voltages, uint8_t *cou
   memcpy(voltages, cell_voltages_uv, bcc0_config->cell_count * sizeof(uint32_t));
 }
 
+void BatteryManagementSystem::dump_registers() {
+  if (!hardware_initialized) {
+    Serial.println("Error: BCC hardware not initialized");
+    return;
+  }
+
+  Serial.println("\n========================================");
+  Serial.println("BCC Configuration Register Dump");
+  Serial.println("========================================\n");
+
+  // Dump BCC0
+  for (uint8_t dev = 0; dev < bcc0_config->device_count; dev++) {
+    bcc_cid_t cid = static_cast<bcc_cid_t>(dev + 1);
+    bcc_device_t device_type = bcc0_config->devices[dev];
+
+    Serial.printf("###############################################\n");
+    Serial.printf("# BCC0 - CID %d (MC3377%s)\n", cid,
+            (device_type == BCC_DEVICE_MC33771) ? "1" : "2");
+    Serial.printf("###############################################\n\n");
+
+    // Read INIT register
+    uint16_t regVal;
+    bcc_status_t error = bcc0->read_register(cid, BCC_REG_INIT_ADDR, 1U, &regVal);
+    if (error == BCC_STATUS_SUCCESS) {
+      Serial.printf("  %-25s | 0x%04X | 0x%02X%02X\n", "INIT", BCC_REG_INIT_ADDR,
+                   regVal >> 8, regVal & 0xFFU);
+    }
+
+    Serial.println("  -------------------------------");
+    Serial.println("  Register Name            | Addr   | Value");
+    Serial.println("  -------------------------------");
+
+    // Read all configuration registers based on device type
+    if (device_type == BCC_DEVICE_MC33771) {
+      for (uint8_t i = 0; i < REG_CONF_CNT_MC33771; i++) {
+        error = bcc0->read_register(cid, BCC_REGISTERS_DATA_MC33771[i].address, 1U, &regVal);
+        if (error == BCC_STATUS_SUCCESS) {
+          Serial.printf("  %-25s | 0x%04X | 0x%02X%02X\n",
+                       BCC_REGISTERS_DATA_MC33771[i].name,
+                       BCC_REGISTERS_DATA_MC33771[i].address,
+                       regVal >> 8, regVal & 0xFFU);
+        } else {
+          Serial.printf("  %-25s | 0x%04X | ERROR %d\n",
+                       BCC_REGISTERS_DATA_MC33771[i].name,
+                       BCC_REGISTERS_DATA_MC33771[i].address,
+                       error);
+        }
+      }
+    } else {
+      for (uint8_t i = 0; i < REG_CONF_CNT_MC33772; i++) {
+        error = bcc0->read_register(cid, BCC_REGISTERS_DATA_MC33772[i].address, 1U, &regVal);
+        if (error == BCC_STATUS_SUCCESS) {
+          Serial.printf("  %-25s | 0x%04X | 0x%02X%02X\n",
+                       BCC_REGISTERS_DATA_MC33772[i].name,
+                       BCC_REGISTERS_DATA_MC33772[i].address,
+                       regVal >> 8, regVal & 0xFFU);
+        } else {
+          Serial.printf("  %-25s | 0x%04X | ERROR %d\n",
+                       BCC_REGISTERS_DATA_MC33772[i].name,
+                       BCC_REGISTERS_DATA_MC33772[i].address,
+                       error);
+        }
+      }
+    }
+
+    Serial.println("  -------------------------------\n");
+
+    // Read GUID
+    uint64_t guid;
+    error = bcc0->read_guid(cid, &guid);
+    if (error == BCC_STATUS_SUCCESS) {
+      Serial.printf("  Device GUID: 0x%02X%04X%04X\n",
+              (uint16_t)((guid >> 32) & 0x001FU),
+              (uint16_t)((guid >> 16) & 0xFFFFU),
+              (uint16_t)(guid & 0xFFFFU));
+    }
+
+    Serial.println();
+  }
+
+  Serial.println("========================================");
+  Serial.println("Register dump complete");
+  Serial.println("========================================\n");
+}
+
 BMS_State BatteryManagementSystem::enable_sleep_mode() {
   auto result = this->bcc0->enter_low_power_mode() == BCC_STATUS_SUCCESS;
   if (result)
