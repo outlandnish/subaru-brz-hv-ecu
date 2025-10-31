@@ -4,6 +4,7 @@
 #include "TPLSPI.h"
 #include "BatteryCellController.h"
 #include "taycan.h"
+#include "uds.h"
 
 #define Serial SerialUSB
 
@@ -28,21 +29,11 @@
 #define STATUS_LEDS PD5
 #define STATUS_LED_COUNT 5
 
-#define NEGATIVE_CONTACTOR_CONTROL PC0
-#define POSITIVE_CONTACTOR_CONTROL PC1
-#define CONTACTOR_CONTROL_ENABLE PC2
-#define CONTACTOR_CONTROL_FAULT PC3
-
-#define M3_CAN_RX PD0
-#define M3_CAN_TX PD1
-#define M3_CAN_TERMINATION_ENABLE PD2
-
-#define HV_CAN_RX PA8
-#define HV_CAN_TX PB15
-#define HV_CAN_TERMINATION_ENABLE PD3
-
-#define IPC_CAN_RX PB12
-#define IPC_CAN_TX PB13
+// DRV8874 H-bridge contactor driver control (PMODE floating = independent half-bridge mode)
+#define CONTACTOR_PH_PIN PC5            // DRV8874 PH/IN2 (controls OUT2, LOW when energizing)
+#define CONTACTOR_EN_PIN PC6            // DRV8874 EN/IN1 (controls OUT1, HIGH when energizing)
+#define CONTACTOR_NSLEEP_PIN PC2        // DRV8874 nSLEEP (must be HIGH to operate)
+#define CONTACTOR_FAULT_PIN PC3         // DRV8874 nFAULT (Fault input, active LOW)
 
 #define PCS_ENABLE_CONTROL PD12
 #define PCS_CHARGE_CONTROL PD13

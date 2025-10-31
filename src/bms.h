@@ -67,10 +67,23 @@ class BatteryManagementSystem {
 
   BMSChargingConfig charging_config;
 
-  // Cell voltage tracking
-  uint32_t cell_voltages_uv[BCC_MAX_CELLS];
-  uint32_t stack_voltage_uv;
+  // Cell voltage tracking (raw and filtered)
+  uint32_t cell_voltages_uv[BCC_MAX_CELLS];           // Raw measurements
+  uint32_t cell_voltages_filtered_uv[BCC_MAX_CELLS];  // Exponentially filtered
+  uint32_t stack_voltage_uv;                          // Raw measurement
+  uint32_t stack_voltage_filtered_uv;                 // Exponentially filtered
+  float voltage_filter_alpha;                         // Exponential filter coefficient (0-1)
   uint8_t cells_to_balance[BCC_MAX_CELLS];
+
+  // Fault status tracking
+  uint16_t fault_status[11];  // Array to store all fault registers
+  bool has_overvoltage_fault;
+  bool has_undervoltage_fault;
+  bool has_temperature_fault;
+  bool has_cb_open_fault;
+  bool has_cb_short_fault;
+  uint32_t last_fault_check;
+  uint32_t fault_check_interval_ms;
 
   // Initialization flag and communication tracking
   bool hardware_initialized;
@@ -103,6 +116,9 @@ class BatteryManagementSystem {
 
   bool measure_cell_voltages(BatteryCellController *bcc, uint32_t *cell_voltages);
   bool measure_stack_voltage(BatteryCellController *bcc, uint32_t *stack_voltage);
+  void apply_exponential_filter();
+  bool read_fault_status(BatteryCellController *bcc);
+  void check_faults();
   void calculate_cell_balance_requirements(uint32_t *cell_voltages, uint8_t cell_count,
                                            uint8_t *cells_to_balance);
   void apply_cell_balancing(BatteryCellController *bcc, uint8_t *cells_to_balance,
@@ -154,10 +170,16 @@ class BatteryManagementSystem {
     BMS_State get_state() const { return current_state; }
     BMSChargingConfig get_charging_config() const { return charging_config; }
     void get_cell_voltages(uint32_t *voltages, uint8_t *count);
+    void get_cell_voltages_filtered(uint32_t *voltages, uint8_t *count);
     uint32_t get_stack_voltage() const { return stack_voltage_uv; }
+    uint32_t get_stack_voltage_filtered() const { return stack_voltage_filtered_uv; }
+    void set_voltage_filter_alpha(float alpha);
+    void get_fault_status(uint16_t *faults);
+    bool has_faults() const;
 
     // Register dump
     void dump_registers();
+    void print_fault_status();
 
     BMS_State enable_sleep_mode();
 };

@@ -1,13 +1,14 @@
 {
   "files.associations": {
-    "optional": "cpp",
-    "istream": "cpp",
-    "ostream": "cpp",
-    "system_error": "cpp",
+    "__bit_reference": "cpp",
+    "__hash_table": "cpp",
+    "__split_buffer": "cpp",
     "array": "cpp",
-    "functional": "cpp",
-    "tuple": "cpp",
-    "type_traits": "cpp",
-    "utility": "cpp"
+    "deque": "cpp",
+    "initializer_list": "cpp",
+    "string": "cpp",
+    "string_view": "cpp",
+    "unordered_map": "cpp",
+    "vector": "cpp"
   }
 }
