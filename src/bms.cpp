@@ -1,6 +1,6 @@
 #include "bms.h"
 #include "Arduino.h"
-#include "hv-ecu-v0-pins.h"
+
 #define Serial SerialUSB
 
 BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *config0, BatteryCellControllerConfig *config1) {

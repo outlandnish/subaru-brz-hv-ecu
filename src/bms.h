@@ -1,14 +1,14 @@
 #pragma once
-#include "hv-ecu-v0-pins.h"
+#include "hal/hv-ecu-v0-pins.h"
 #include <STM32FreeRTOS.h>
 #include "BatteryCellController.h"
 #include "SPI.h"
-#include "dma_config.h"
+#include "hal/dma_config.h"
 #include <Adafruit_NeoPixel.h>
-#include "evse.h"
-#include "pcs.h"
+#include "evse/evse.h"
+#include "pcs/pcs.h"
 #include "can.h"
-#include "ivt_shunt.h"
+#include "ivt-s/ivt_shunt.h"
 
 enum BMS_State : uint8_t {
   BMS_Initialization,

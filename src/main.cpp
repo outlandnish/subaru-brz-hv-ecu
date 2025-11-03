@@ -6,12 +6,6 @@
  */
 
 #include "main.h"
-#include "bms.h"
-#include "dma_config.h"
-#include "can.h"
-#include "evse.h"
-#include "pcs.h"
-#include "ivt_shunt.h"
 #include <STM32FreeRTOS.h>
 #include <Adafruit_NeoPixel.h>
 
