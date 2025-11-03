@@ -10,5 +10,8 @@
     "string_view": "cpp",
     "unordered_map": "cpp",
     "vector": "cpp"
-  }
+  },
+  "C_Cpp.intelliSenseEngine": "default",
+  "C_Cpp.errorSquiggles": "enabled",
+  "C_Cpp.default.configurationProvider": "platformio.platformio-ide"
 }

@@ -1,6 +1,6 @@
 #include "bms.h"
 #include "Arduino.h"
-
+#include "hv-ecu-v0-pins.h"
 #define Serial SerialUSB
 
 BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *config0, BatteryCellControllerConfig *config1) {
@@ -10,8 +10,8 @@ BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *co
     devices_0[i] = BCC_DEVICE_MC33772;
   }
 
-  bcc0_tx_spi = new SPIClass(BMS0_TX_DATA, NC, BMS0_TX_SCK, NC);
-  bcc0_rx_spi = new SPIClass(BMS0_RX_DATA, NC, BMS0_RX_SCK, BMS0_RX_CS);
+  bcc0_tx_spi = new SPIClass(BCC0_TX_DATA, NC, BCC0_TX_SCK, NC);
+  bcc0_rx_spi = new SPIClass(BCC0_RX_DATA, NC, BCC0_RX_SCK, BCC0_RX_CS);
 
   tpl0 = new TPLSPI(bcc0_tx_spi, bcc0_rx_spi, config0->cs_pin, configureDMA_HV_ECU);
   bcc0 = new BatteryCellController(tpl0, devices_0, config0->device_count, config0->cell_count, config0->enable_pin, config0->intb_pin, config0->loopback);
@@ -20,11 +20,14 @@ BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *co
   if (config1 != nullptr) {
     bcc1_config = config1;
     devices_1 = new bcc_device_t[config1->device_count];
+    for (uint8_t i = 0; i < config1->device_count; i++) {
+      devices_1[i] = BCC_DEVICE_MC33772;
+    }
 
-    bcc1_tx_spi = new SPIClass(BMS1_TX_DATA, NC, BMS1_TX_SCK, NC);
-    bcc1_rx_spi = new SPIClass(NC, BMS1_RX_DATA, BMS1_RX_SCK, BMS1_RX_CS);
+    bcc1_tx_spi = new SPIClass(BCC1_TX_DATA, NC, BCC1_TX_SCK, NC);
+    bcc1_rx_spi = new SPIClass(BCC1_RX_DATA, NC, BCC1_RX_SCK, BCC1_RX_CS);
 
-    tpl1 = new TPLSPI(bcc1_tx_spi, bcc1_rx_spi, BMS1_TX_CS);
+    tpl1 = new TPLSPI(bcc1_tx_spi, bcc1_rx_spi, config1->cs_pin, configureDMA_HV_ECU);
     bcc1 = new BatteryCellController(tpl1, devices_1, config1->device_count, config1->cell_count, config1->enable_pin, config1->intb_pin, config1->loopback);
     bcc1_enabled = true;
   } else {
@@ -44,6 +47,14 @@ BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *co
   last_successful_measurement = 0;
   communication_timeout_ms = 5000; // 5 second timeout
   communication_lost = false;
+
+  // Initialize EVSE, PCS, and IVT pointers
+  evse = nullptr;
+  pcs = nullptr;
+  ivt_shunt = nullptr;
+  ipc_can = nullptr;
+  m3_can = nullptr;
+  hv_can = nullptr;
 
   // Initialize cell voltage and balancing arrays
   memset(cell_voltages_uv, 0, sizeof(cell_voltages_uv));
@@ -83,21 +94,21 @@ void BatteryManagementSystem::set_charging_config(BMSChargingConfig config) {
   charging_config = config;
 }
 
-void BatteryManagementSystem::set_contactor_pins(uint8_t ph_pin, uint8_t en_pin, uint8_t nsleep_pin, uint8_t fault_pin) {
-  negative_contactor_pin = ph_pin;      // Using existing variable for PH
-  positive_contactor_pin = en_pin;      // Using existing variable for EN
-  contactor_enable_pin = nsleep_pin;    // Using existing variable for nSLEEP
+void BatteryManagementSystem::set_contactor_pins(uint8_t contactor1_pin, uint8_t contactor2_pin, uint8_t nsleep_pin, uint8_t fault_pin) {
+  positive_contactor_pin = contactor1_pin;  // IN1 controls OUT1 for contactor 1
+  negative_contactor_pin = contactor2_pin;  // IN2 controls OUT2 for contactor 2
+  contactor_enable_pin = nsleep_pin;        // nSLEEP
   contactor_fault_pin = fault_pin;
 
-  pinMode(negative_contactor_pin, OUTPUT);  // PH pin
-  pinMode(positive_contactor_pin, OUTPUT);  // EN pin
-  pinMode(contactor_enable_pin, OUTPUT);    // nSLEEP pin
-  pinMode(contactor_fault_pin, INPUT_PULLUP); // nFAULT pin (active LOW)
+  pinMode(positive_contactor_pin, OUTPUT);     // IN1 pin
+  pinMode(negative_contactor_pin, OUTPUT);     // IN2 pin
+  pinMode(contactor_enable_pin, OUTPUT);       // nSLEEP pin
+  pinMode(contactor_fault_pin, INPUT_PULLUP);  // nFAULT pin (active LOW)
 
   // Initialize DRV8874 to disabled state
   digitalWrite(contactor_enable_pin, HIGH);    // nSLEEP HIGH to wake device
-  digitalWrite(negative_contactor_pin, LOW);   // PH = LOW (direction doesn't matter when disabled)
-  digitalWrite(positive_contactor_pin, LOW);   // EN = LOW (disabled)
+  digitalWrite(positive_contactor_pin, LOW);   // IN1 = LOW (OUT1 disabled)
+  digitalWrite(negative_contactor_pin, LOW);   // IN2 = LOW (OUT2 disabled)
 }
 
 void BatteryManagementSystem::set_status_leds(Adafruit_NeoPixel *leds) {
@@ -110,6 +121,24 @@ void BatteryManagementSystem::set_status_leds(Adafruit_NeoPixel *leds) {
     }
     status_leds->show();
   }
+}
+
+void BatteryManagementSystem::set_evse(EVSEController *evse_controller) {
+  evse = evse_controller;
+}
+
+void BatteryManagementSystem::set_pcs(TeslaM3PCSController *pcs_controller) {
+  pcs = pcs_controller;
+}
+
+void BatteryManagementSystem::set_ivt_shunt(IVTShunt *shunt) {
+  ivt_shunt = shunt;
+}
+
+void BatteryManagementSystem::set_can_buses(CANBus *ipc_can_bus, CANBus *m3_can_bus, CANBus *hv_can_bus) {
+  ipc_can = ipc_can_bus;
+  m3_can = m3_can_bus;
+  hv_can = hv_can_bus;
 }
 
 bool BatteryManagementSystem::start_tasks() {
@@ -194,12 +223,26 @@ void BatteryManagementSystem::master_task_loop() {
   Serial.println("BMS Master Task: Hardware initialized, starting state machine");
 
   while (true) {
+    // Update EVSE status if configured
+    if (evse != nullptr) {
+      evse->update();
+    }
+
+    // Update PCS if configured
+    if (pcs != nullptr) {
+      pcs->update();
+    }
+
     // Check for contactor fault
     if (digitalRead(contactor_fault_pin) == LOW) {
       if (!contactor_fault) {
         Serial.println("BMS: Contactor fault detected!");
         contactor_fault = true;
         disable_contactors();
+        if (pcs != nullptr) {
+          pcs->enable_charging(false);
+          pcs->request_hv(false);
+        }
         current_state = BMS_Error;
       }
       vTaskDelay(pdMS_TO_TICKS(1000));
@@ -209,16 +252,51 @@ void BatteryManagementSystem::master_task_loop() {
     switch (current_state) {
       case BMS_Idle:
         // Wait for user to start charging via console
-        // Do nothing, just monitor
+        // Check if EVSE is connected and ready
+        if (evse != nullptr && evse->is_ready_to_charge()) {
+          uint16_t available_current = evse->get_max_charge_current_ma();
+          Serial.printf("BMS: EVSE ready - %d mA available\r\n", available_current);
+        }
         break;
 
       case BMS_Charging: {
+        // Check if EVSE is still connected (if configured)
+        if (evse != nullptr && !evse->is_ready_to_charge()) {
+          Serial.println("BMS: EVSE disconnected - stopping charge");
+          disable_contactors();
+          if (pcs != nullptr) {
+            pcs->enable_charging(false);
+            pcs->request_hv(false);
+          }
+          current_state = BMS_Idle;
+          break;
+        }
+
         // Use filtered voltages for decision making to avoid noise-induced state changes
         if (has_reached_target_voltage(cell_voltages_filtered_uv, bcc0_config->cell_count)) {
           Serial.println("BMS: Target voltage reached!");
           disable_contactors();
+          if (pcs != nullptr) {
+            pcs->enable_charging(false);
+            pcs->request_hv(false);
+          }
           current_state = BMS_Idle;
           break;
+        }
+
+        // Update PCS with current battery voltage and power request
+        if (pcs != nullptr) {
+          // Set target voltage slightly above current voltage for CV charging
+          uint32_t target_v_mv = (uint32_t)(charging_config.target_cell_voltage * bcc0_config->cell_count * 1000.0f);
+          pcs->set_target_voltage_mv(target_v_mv);
+
+          // Calculate charge power based on available current from EVSE
+          if (evse != nullptr) {
+            uint16_t available_current_ma = evse->get_max_charge_current_ma();
+            uint16_t stack_voltage_v = stack_voltage_filtered_uv / 1000000;
+            uint16_t charge_power_w = (available_current_ma * stack_voltage_v) / 1000;  // P = I * V
+            pcs->set_charge_power_w(charge_power_w);
+          }
         }
 
         // Check cell voltage difference using filtered values
@@ -228,6 +306,9 @@ void BatteryManagementSystem::master_task_loop() {
           Serial.printf("BMS: Cell imbalance detected: %.2f mV (threshold: %.2f mV)\r\n",
                        max_diff_mv, charging_config.balance_threshold_mv);
           disable_contactors();
+          if (pcs != nullptr) {
+            pcs->enable_charging(false);
+          }
           current_state = BMS_CellBalancing;
 
           // Calculate which cells need balancing using filtered voltages
@@ -272,11 +353,9 @@ void BatteryManagementSystem::master_task_loop() {
 
 // BCC0 monitor task - reads cell voltages
 void BatteryManagementSystem::bcc0_monitor_task_loop() {
-  Serial.println("BCC0 Monitor Task: Started");
-
   // Perform hardware initialization here (after scheduler starts)
   if (!hardware_initialized) {
-    Serial.println("BCC0: Initializing hardware...");
+    Serial.println("BCC0: Initializing...");
     vTaskDelay(pdMS_TO_TICKS(2000)); // Wait for system to stabilize
 
     pinMode(bcc0_config->cs_pin, OUTPUT);
@@ -284,18 +363,15 @@ void BatteryManagementSystem::bcc0_monitor_task_loop() {
 
     bcc_status_t error = bcc0->begin(nullptr);
     if (error != BCC_STATUS_SUCCESS) {
-      Serial.printf("BCC0: Initialization failed: %d\r\n", error);
+      Serial.printf("BCC0: Init failed (error %d)\r\n", error);
       current_state = BMS_Error;
       hardware_initialized = false;
     } else {
-      Serial.println("BCC0: Initialization successful");
+      Serial.println("BCC0: Ready");
       hardware_initialized = true;
       current_state = BMS_Idle;
     }
   }
-
-  static uint32_t print_counter = 0;
-  const uint32_t PRINT_INTERVAL = 50; // Print voltages every 50 measurements (1 second @ 50 Hz)
 
   while (true) {
     if (hardware_initialized && current_state != BMS_Error) {
@@ -306,37 +382,18 @@ void BatteryManagementSystem::bcc0_monitor_task_loop() {
         // Successful measurement - update timestamp and clear comm lost flag
         last_successful_measurement = millis();
         if (communication_lost) {
-          Serial.println("BCC0: Communication restored");
+          Serial.println("BCC0: Comm restored");
           communication_lost = false;
         }
 
         // Apply exponential filter to smooth measurements
         apply_exponential_filter();
-
-        // Only print cell voltages periodically to avoid console spam
-        print_counter++;
-        if (print_counter >= PRINT_INTERVAL) {
-          print_counter = 0;
-
-          // Calculate min/max using filtered values for quick overview
-          uint32_t min_v = cell_voltages_filtered_uv[0];
-          uint32_t max_v = cell_voltages_filtered_uv[0];
-          for (uint8_t i = 1; i < bcc0_config->cell_count; i++) {
-            if (cell_voltages_filtered_uv[i] < min_v) min_v = cell_voltages_filtered_uv[i];
-            if (cell_voltages_filtered_uv[i] > max_v) max_v = cell_voltages_filtered_uv[i];
-          }
-          float diff_mv = (max_v - min_v) / 1000.0f;
-
-          Serial.printf("[Monitor] Stack: %.3f V | Min: %.4f V, Max: %.4f V, Diff: %.2f mV\r\n",
-                       stack_voltage_filtered_uv / 1000000.0f,
-                       min_v / 1000000.0f, max_v / 1000000.0f, diff_mv);
-        }
       } else {
         // Failed measurement - check for timeout
         if (!communication_lost && last_successful_measurement > 0) {
           uint32_t time_since_last = millis() - last_successful_measurement;
           if (time_since_last > communication_timeout_ms) {
-            Serial.println("BCC0: Communication lost! Entering error state.");
+            Serial.println("BCC0: Comm lost!");
             communication_lost = true;
             current_state = BMS_Error;
           }
@@ -357,13 +414,62 @@ void BatteryManagementSystem::bcc0_monitor_task_loop() {
   }
 }
 
-// BCC1 monitor task - disabled for now but keeps same structure
+// BCC1 monitor task
 void BatteryManagementSystem::bcc1_monitor_task_loop() {
-  Serial.println("BCC1 Monitor Task: Started (monitoring disabled)");
+  // Perform hardware initialization here (after scheduler starts)
+  static bool bcc1_initialized = false;
+  if (!bcc1_initialized && bcc1_enabled) {
+    Serial.println("BCC1: Waiting for BCC0...");
+    vTaskDelay(pdMS_TO_TICKS(3000)); // Wait for BCC0 to init first
+
+    Serial.println("BCC1: Initializing...");
+    pinMode(bcc1_config->cs_pin, OUTPUT);
+    digitalWrite(bcc1_config->cs_pin, HIGH);
+
+    bcc_status_t error = bcc1->begin(nullptr);
+    if (error != BCC_STATUS_SUCCESS) {
+      Serial.printf("BCC1: Init failed (error %d)\r\n", error);
+      bcc1_initialized = false;
+    } else {
+      Serial.println("BCC1: Ready");
+      bcc1_initialized = true;
+    }
+  }
+
+  const uint8_t CELL_OFFSET = 6; // BCC1 cells stored at positions 6-11
 
   while (true) {
-    // BCC1 monitoring disabled for single pack charging
-    vTaskDelay(pdMS_TO_TICKS(5000));
+    if (bcc1_initialized && bcc1_enabled && hardware_initialized && current_state != BMS_Error) {
+      uint32_t bcc1_cell_voltages[BCC_MAX_CELLS];
+      uint32_t bcc1_stack_voltage;
+
+      bool voltage_ok = measure_cell_voltages(bcc1, bcc1_cell_voltages);
+      bool stack_ok = measure_stack_voltage(bcc1, &bcc1_stack_voltage);
+
+      if (voltage_ok && stack_ok) {
+        // Store BCC1 cells at offset 6 in the main arrays
+        for (uint8_t i = 0; i < bcc1_config->cell_count; i++) {
+          cell_voltages_uv[CELL_OFFSET + i] = bcc1_cell_voltages[i];
+        }
+
+        // Apply exponential filter for BCC1 cells
+        for (uint8_t i = 0; i < bcc1_config->cell_count; i++) {
+          uint8_t idx = CELL_OFFSET + i;
+          if (cell_voltages_filtered_uv[idx] == 0) {
+            // First measurement - initialize filter
+            cell_voltages_filtered_uv[idx] = cell_voltages_uv[idx];
+          } else {
+            // Apply exponential filter
+            cell_voltages_filtered_uv[idx] =
+              (uint32_t)(voltage_filter_alpha * cell_voltages_uv[idx] +
+                        (1.0f - voltage_filter_alpha) * cell_voltages_filtered_uv[idx]);
+          }
+        }
+      }
+    }
+
+    // Run at configured measurement interval
+    vTaskDelay(pdMS_TO_TICKS(charging_config.measurement_interval_ms));
   }
 }
 
@@ -532,44 +638,38 @@ bool BatteryManagementSystem::has_reached_target_voltage(uint32_t *cell_voltages
 
 void BatteryManagementSystem::enable_contactors() {
   if (contactor_fault) {
-    Serial.println("BMS: Cannot enable contactor - fault detected");
+    Serial.println("BMS: Cannot enable contactors - fault detected");
     return;
   }
 
-  Serial.println("BMS: Enabling contactor");
+  Serial.println("BMS: Enabling contactors");
   // DRV8874 in independent half-bridge mode (PMODE floating)
-  // To drive current through contactor: PH/IN2=HIGH, EN/IN1=LOW
+  // IN1 and IN2 independently control OUT1 and OUT2 for two separate contactors
   digitalWrite(contactor_enable_pin, HIGH);    // nSLEEP = HIGH (device awake)
-  digitalWrite(negative_contactor_pin, HIGH);  // PH/IN2 = HIGH (OUT2 enabled)
-  digitalWrite(positive_contactor_pin, LOW);   // EN/IN1 = LOW (OUT1 low)
+  digitalWrite(positive_contactor_pin, HIGH);  // IN1 = HIGH (OUT1 energizes contactor 1)
+  digitalWrite(negative_contactor_pin, HIGH);  // IN2 = HIGH (OUT2 energizes contactor 2)
 }
 
 void BatteryManagementSystem::disable_contactors() {
-  Serial.println("BMS: Disabling contactor");
-  // DRV8874 in independent half-bridge mode: both outputs LOW
-  digitalWrite(positive_contactor_pin, LOW);   // EN/IN1 = LOW (OUT1 disabled)
-  digitalWrite(negative_contactor_pin, LOW);   // PH/IN2 = LOW (OUT2 low)
+  Serial.println("BMS: Disabling contactors");
+  // DRV8874 in independent half-bridge mode: set both IN1 and IN2 LOW to disable both contactors
+  digitalWrite(positive_contactor_pin, LOW);   // IN1 = LOW (OUT1 disabled, contactor 1 off)
+  digitalWrite(negative_contactor_pin, LOW);   // IN2 = LOW (OUT2 disabled, contactor 2 off)
   // Note: nSLEEP (contactor_enable_pin) stays HIGH to keep device awake
 }
 
-void BatteryManagementSystem::control_contactors(bool enable_negative, bool enable_positive) {
-  // Note: This function is kept for compatibility but with DRV8874 H-bridge driver
-  // we only have one contactor, so we enable if either signal is true
+void BatteryManagementSystem::control_contactors(bool enable_contactor1, bool enable_contactor2) {
+  // DRV8874 in independent half-bridge mode with two separate contactors
+  // IN1 controls OUT1 for contactor 1, IN2 controls OUT2 for contactor 2
   if (contactor_fault) {
-    digitalWrite(positive_contactor_pin, LOW);  // EN/IN1 = LOW (disabled)
-    digitalWrite(negative_contactor_pin, LOW);  // PH/IN2 = LOW
+    digitalWrite(positive_contactor_pin, LOW);   // IN1 = LOW (disabled)
+    digitalWrite(negative_contactor_pin, LOW);   // IN2 = LOW (disabled)
     return;
   }
 
-  if (enable_negative || enable_positive) {
-    // Enable: PH/IN2=HIGH, EN/IN1=LOW (current flows OUT2→OUT1)
-    digitalWrite(negative_contactor_pin, HIGH);  // PH/IN2 = HIGH
-    digitalWrite(positive_contactor_pin, LOW);   // EN/IN1 = LOW
-  } else {
-    // Disable: both LOW
-    digitalWrite(positive_contactor_pin, LOW);   // EN/IN1 = LOW
-    digitalWrite(negative_contactor_pin, LOW);   // PH/IN2 = LOW
-  }
+  // Independently control each contactor
+  digitalWrite(positive_contactor_pin, enable_contactor1 ? HIGH : LOW);  // IN1 controls contactor 1
+  digitalWrite(negative_contactor_pin, enable_contactor2 ? HIGH : LOW);  // IN2 controls contactor 2
 }
 
 void BatteryManagementSystem::start_charging() {
@@ -578,8 +678,32 @@ void BatteryManagementSystem::start_charging() {
     return;
   }
 
+  // Check if EVSE is ready (if configured)
+  if (evse != nullptr && !evse->is_ready_to_charge()) {
+    Serial.println("BMS: Cannot start charging - EVSE not ready");
+    return;
+  }
+
   if (current_state == BMS_Idle || current_state == BMS_Cooldown) {
     Serial.println("BMS: Starting charging cycle");
+
+    // Signal EVSE we're ready to charge
+    if (evse != nullptr) {
+      evse->set_ready_to_charge(true);
+    }
+
+    // Start PCS if configured
+    if (pcs != nullptr) {
+      Serial.println("BMS: Enabling PCS");
+      pcs->request_hv(true);
+      pcs->set_mode(PCS_MODE_CHARGE_ONLY);
+      pcs->enable_charging(true);
+
+      // Set initial target voltage
+      uint32_t target_v_mv = (uint32_t)(charging_config.target_cell_voltage * bcc0_config->cell_count * 1000.0f);
+      pcs->set_target_voltage_mv(target_v_mv);
+    }
+
     enable_contactors();
     current_state = BMS_Charging;
   } else {
@@ -590,6 +714,20 @@ void BatteryManagementSystem::start_charging() {
 
 void BatteryManagementSystem::stop_charging() {
   Serial.println("BMS: User requested charging stop");
+
+  // Signal EVSE we're not ready
+  if (evse != nullptr) {
+    evse->set_ready_to_charge(false);
+  }
+
+  // Stop PCS if configured
+  if (pcs != nullptr) {
+    Serial.println("BMS: Disabling PCS");
+    pcs->enable_charging(false);
+    pcs->request_hv(false);
+    pcs->set_mode(PCS_MODE_OFF);
+  }
+
   disable_contactors();
   stop_cell_balancing(bcc0, bcc0_config->cell_count);
   current_state = BMS_Cooldown;
@@ -609,13 +747,21 @@ void BatteryManagementSystem::force_balance_cells() {
 }
 
 void BatteryManagementSystem::get_cell_voltages(uint32_t *voltages, uint8_t *count) {
-  *count = bcc0_config->cell_count;
-  memcpy(voltages, cell_voltages_uv, bcc0_config->cell_count * sizeof(uint32_t));
+  uint8_t total_cells = bcc0_config->cell_count;
+  if (bcc1_enabled) {
+    total_cells += bcc1_config->cell_count;
+  }
+  *count = total_cells;
+  memcpy(voltages, cell_voltages_uv, total_cells * sizeof(uint32_t));
 }
 
 void BatteryManagementSystem::get_cell_voltages_filtered(uint32_t *voltages, uint8_t *count) {
-  *count = bcc0_config->cell_count;
-  memcpy(voltages, cell_voltages_filtered_uv, bcc0_config->cell_count * sizeof(uint32_t));
+  uint8_t total_cells = bcc0_config->cell_count;
+  if (bcc1_enabled) {
+    total_cells += bcc1_config->cell_count;
+  }
+  *count = total_cells;
+  memcpy(voltages, cell_voltages_filtered_uv, total_cells * sizeof(uint32_t));
 }
 
 void BatteryManagementSystem::set_voltage_filter_alpha(float alpha) {
@@ -748,6 +894,115 @@ void BatteryManagementSystem::dump_registers() {
     Serial.println("  -------------------------------\n");
   }
 
+  // Dump BCC1 if enabled
+  if (bcc1_enabled && bcc1 != nullptr) {
+    Serial.println("\n========================================");
+    Serial.println("BCC1 Configuration Register Dump");
+    Serial.println("========================================\n");
+
+    for (uint8_t dev = 0; dev < bcc1_config->device_count; dev++) {
+      bcc_cid_t cid = static_cast<bcc_cid_t>(dev + 1);
+      bcc_device_t device_type = bcc1_config->devices[dev];
+
+      Serial.printf("###############################################\n");
+      Serial.printf("# BCC1 - CID %d (MC3377%s)\n", cid,
+              (device_type == BCC_DEVICE_MC33771) ? "1" : "2");
+      Serial.printf("###############################################\n\n");
+
+      // Read INIT register
+      uint16_t regVal;
+      bcc_status_t error = bcc1->read_register(cid, BCC_REG_INIT_ADDR, 1U, &regVal);
+      if (error == BCC_STATUS_SUCCESS) {
+        Serial.printf("  %-25s | 0x%04X | 0x%02X%02X\n", "INIT", BCC_REG_INIT_ADDR,
+                     regVal >> 8, regVal & 0xFFU);
+      }
+
+      Serial.println("  -------------------------------");
+      Serial.println("  Register Name            | Addr   | Value");
+      Serial.println("  -------------------------------");
+
+      // Read all configuration registers based on device type
+      if (device_type == BCC_DEVICE_MC33771) {
+        for (uint8_t i = 0; i < REG_CONF_CNT_MC33771; i++) {
+          error = bcc1->read_register(cid, BCC_REGISTERS_DATA_MC33771[i].address, 1U, &regVal);
+          if (error == BCC_STATUS_SUCCESS) {
+            Serial.printf("  %-25s | 0x%04X | 0x%02X%02X\n",
+                         BCC_REGISTERS_DATA_MC33771[i].name,
+                         BCC_REGISTERS_DATA_MC33771[i].address,
+                         regVal >> 8, regVal & 0xFFU);
+          } else {
+            Serial.printf("  %-25s | 0x%04X | ERROR %d\n",
+                         BCC_REGISTERS_DATA_MC33771[i].name,
+                         BCC_REGISTERS_DATA_MC33771[i].address,
+                         error);
+          }
+        }
+      } else {
+        for (uint8_t i = 0; i < REG_CONF_CNT_MC33772; i++) {
+          error = bcc1->read_register(cid, BCC_REGISTERS_DATA_MC33772[i].address, 1U, &regVal);
+          if (error == BCC_STATUS_SUCCESS) {
+            Serial.printf("  %-25s | 0x%04X | 0x%02X%02X\n",
+                         BCC_REGISTERS_DATA_MC33772[i].name,
+                         BCC_REGISTERS_DATA_MC33772[i].address,
+                         regVal >> 8, regVal & 0xFFU);
+          } else {
+            Serial.printf("  %-25s | 0x%04X | ERROR %d\n",
+                         BCC_REGISTERS_DATA_MC33772[i].name,
+                         BCC_REGISTERS_DATA_MC33772[i].address,
+                         error);
+          }
+        }
+      }
+
+      Serial.println("  -------------------------------\n");
+
+      // Read GUID
+      uint64_t guid;
+      error = bcc1->read_guid(cid, &guid);
+      if (error == BCC_STATUS_SUCCESS) {
+        Serial.printf("  Device GUID: 0x%02X%04X%04X\n",
+                (uint16_t)((guid >> 32) & 0x001FU),
+                (uint16_t)((guid >> 16) & 0xFFFFU),
+                (uint16_t)(guid & 0xFFFFU));
+      }
+
+      Serial.println();
+    }
+
+    Serial.println("========================================");
+    Serial.println("BCC1 Fuse Mirror Data");
+    Serial.println("========================================\n");
+
+    // Dump fuse mirror data for BCC1
+    for (uint8_t dev = 0; dev < bcc1_config->device_count; dev++) {
+      bcc_cid_t cid = static_cast<bcc_cid_t>(dev + 1);
+      bcc_device_t device_type = bcc1_config->devices[dev];
+
+      Serial.printf("###############################################\n");
+      Serial.printf("# BCC1 - CID %d Fuse Mirror\n", cid);
+      Serial.printf("###############################################\n\n");
+
+      Serial.println("  -------------------------------");
+      Serial.println("  Fuse Address         | Value");
+      Serial.println("  -------------------------------");
+
+      // Read all fuse mirror addresses (0x00 - 0x1F)
+      uint8_t max_fuse_addr = (device_type == BCC_DEVICE_MC33771) ? 0x17 : 0x1F;
+
+      for (uint8_t addr = 0x00; addr <= max_fuse_addr; addr++) {
+        uint16_t fuseVal;
+        bcc_status_t fuse_error = bcc1->read_fuse_mirror(cid, addr, &fuseVal);
+        if (fuse_error == BCC_STATUS_SUCCESS) {
+          Serial.printf("  0x%02X                 | 0x%04X\n", addr, fuseVal);
+        } else {
+          Serial.printf("  0x%02X                 | ERROR %d\n", addr, fuse_error);
+        }
+      }
+
+      Serial.println("  -------------------------------\n");
+    }
+  }
+
   Serial.println("========================================");
   Serial.println("Dump complete");
   Serial.println("========================================\n");
@@ -866,12 +1121,18 @@ void BatteryManagementSystem::set_state_leds(uint32_t color) {
 void BatteryManagementSystem::update_contactor_leds() {
   if (!status_leds) return;
 
-  // Single contactor with DRV8874 H-bridge driver
-  // Contactor is enabled when PH/IN2 pin is HIGH
-  bool ph_high = digitalRead(negative_contactor_pin) == HIGH;  // PH/IN2 pin
+  // Two independent contactors controlled by IN1 and IN2
+  bool contactor1_on = digitalRead(positive_contactor_pin) == HIGH;  // IN1/OUT1
+  bool contactor2_on = digitalRead(negative_contactor_pin) == HIGH;  // IN2/OUT2
 
-  // LED 4: Contactor status (Yellow when enabled, off when disabled)
-  set_led_color(4, ph_high ? color_rgb(255, 255, 0) : color_rgb(0, 0, 0));
+  // LED 4: Contactor status (Yellow when both enabled, orange when one enabled, off when both disabled)
+  if (contactor1_on && contactor2_on) {
+    set_led_color(4, color_rgb(255, 255, 0));  // Yellow - both contactors on
+  } else if (contactor1_on || contactor2_on) {
+    set_led_color(4, color_rgb(255, 128, 0));  // Orange - one contactor on
+  } else {
+    set_led_color(4, color_rgb(0, 0, 0));      // Off - both contactors off
+  }
 }
 
 void BatteryManagementSystem::led_pattern_idle() {

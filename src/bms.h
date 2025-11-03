@@ -1,27 +1,14 @@
 #pragma once
+#include "hv-ecu-v0-pins.h"
 #include <STM32FreeRTOS.h>
 #include "BatteryCellController.h"
 #include "SPI.h"
 #include "dma_config.h"
 #include <Adafruit_NeoPixel.h>
-
-#define BMS0_TX_SCK PA5
-#define BMS0_TX_CS PA6
-#define BMS0_TX_DATA PA7
-#define BMS0_RX_SCK PA9
-#define BMS0_RX_CS PB9
-#define BMS0_RX_DATA PA10
-#define BMS0_ENABLE PE8
-#define BMS0_INTB PE9
-
-#define BMS1_TX_SCK PE2
-#define BMS1_TX_CS PE4
-#define BMS1_TX_DATA PE6
-#define BMS1_RX_SCK PB3
-#define BMS1_RX_CS PA4
-#define BMS1_RX_DATA PB4
-#define BMS1_ENABLE PE10
-#define BMS1_INTB PE11
+#include "evse.h"
+#include "pcs.h"
+#include "can.h"
+#include "ivt_shunt.h"
 
 enum BMS_State : uint8_t {
   BMS_Initialization,
@@ -92,6 +79,9 @@ class BatteryManagementSystem {
   bool communication_lost;
 
   // Contactor control pins
+  // Note: Variable names kept for compatibility, but now represent:
+  // positive_contactor_pin = IN1 (controls OUT1 for contactor 1)
+  // negative_contactor_pin = IN2 (controls OUT2 for contactor 2)
   uint8_t negative_contactor_pin;
   uint8_t positive_contactor_pin;
   uint8_t contactor_enable_pin;
@@ -99,6 +89,20 @@ class BatteryManagementSystem {
 
   bool contactor_fault;
   bool bcc1_enabled;
+
+  // EVSE Controller
+  EVSEController *evse;
+
+  // PCS Controller
+  TeslaM3PCSController *pcs;
+
+  // IVT Current Shunt
+  IVTShunt *ivt_shunt;
+
+  // CAN buses
+  CANBus *ipc_can;
+  CANBus *m3_can;
+  CANBus *hv_can;
 
   // NeoPixel status LEDs
   Adafruit_NeoPixel *status_leds;
@@ -129,7 +133,7 @@ class BatteryManagementSystem {
 
   void enable_contactors();
   void disable_contactors();
-  void control_contactors(bool enable_negative, bool enable_positive);
+  void control_contactors(bool enable_contactor1, bool enable_contactor2);
 
   // LED control
   void update_status_leds();
@@ -155,8 +159,14 @@ class BatteryManagementSystem {
     bool initialize(uint16_t device_configuration[][BCC_INIT_CONF_REG_CNT]);
     void configure_settings(uint16_t config[][BCC_INIT_CONF_REG_CNT]);
     void set_charging_config(BMSChargingConfig config);
-    void set_contactor_pins(uint8_t negative, uint8_t positive, uint8_t enable, uint8_t fault);
+    void set_contactor_pins(uint8_t contactor1, uint8_t contactor2, uint8_t enable, uint8_t fault);
     void set_status_leds(Adafruit_NeoPixel *leds);
+
+    // EVSE, PCS, and IVT configuration
+    void set_evse(EVSEController *evse_controller);
+    void set_pcs(TeslaM3PCSController *pcs_controller);
+    void set_ivt_shunt(IVTShunt *shunt);
+    void set_can_buses(CANBus *ipc_can_bus, CANBus *m3_can_bus, CANBus *hv_can_bus);
 
     // Start the BMS tasks
     bool start_tasks();
@@ -176,6 +186,11 @@ class BatteryManagementSystem {
     void set_voltage_filter_alpha(float alpha);
     void get_fault_status(uint16_t *faults);
     bool has_faults() const;
+
+    // EVSE, PCS, and IVT status
+    EVSEController* get_evse() const { return evse; }
+    TeslaM3PCSController* get_pcs() const { return pcs; }
+    IVTShunt* get_ivt_shunt() const { return ivt_shunt; }
 
     // Register dump
     void dump_registers();
