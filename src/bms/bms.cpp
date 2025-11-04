@@ -37,8 +37,13 @@ BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *co
   }
 
   current_state = BMS_Initialization;
+  hv_state = HV_Disabled;
+  hv_state_entry_time = 0;
+  precharge_start_time = 0;
   contactor_fault = false;
   hardware_initialized = false;
+  bcc0_initialized = false;
+  bcc1_initialized = false;
   stack_voltage_uv = 0;
   stack_voltage_filtered_uv = 0;
   voltage_filter_alpha = 0.2f;  // Default: 0.2 @ 50 Hz = smooth filtering with good responsiveness
@@ -77,6 +82,11 @@ BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *co
   charging_config.balance_target_mv = 10.0f;
   charging_config.balancing_timer_min = 5;
   charging_config.measurement_interval_ms = 20;  // 20ms = 50 Hz measurement rate
+
+  // Set default HV connection config
+  hv_config.precharge_voltage_margin_v = 10.0f;  // 10V margin for precharge completion
+  hv_config.precharge_timeout_ms = 5000;         // 5 second timeout
+  hv_config.precharge_check_interval_ms = 100;   // Check every 100ms
 }
 
 bool BatteryManagementSystem::initialize(uint16_t device_configuration[][BCC_INIT_CONF_REG_CNT]) {
@@ -191,6 +201,21 @@ bool BatteryManagementSystem::start_tasks() {
     }
   }
 
+  // Create HV CAN task
+  result = xTaskCreate(
+    hv_can_task_wrapper,
+    "HV_CAN",
+    2048,
+    this,
+    1,  // Lower priority than monitor tasks
+    &hv_can_task_handle
+  );
+
+  if (result != pdPASS) {
+    Serial.println("BMS: Failed to create HV CAN task");
+    return false;
+  }
+
   Serial.println("BMS: All tasks created successfully");
   return true;
 }
@@ -209,6 +234,11 @@ void BatteryManagementSystem::bcc0_monitor_task_wrapper(void *pvParameters) {
 void BatteryManagementSystem::bcc1_monitor_task_wrapper(void *pvParameters) {
   BatteryManagementSystem *bms = static_cast<BatteryManagementSystem*>(pvParameters);
   bms->bcc1_monitor_task_loop();
+}
+
+void BatteryManagementSystem::hv_can_task_wrapper(void *pvParameters) {
+  BatteryManagementSystem *bms = static_cast<BatteryManagementSystem*>(pvParameters);
+  bms->hv_can_task_loop();
 }
 
 // Master task - manages charging state machine
@@ -233,6 +263,9 @@ void BatteryManagementSystem::master_task_loop() {
       pcs->update();
     }
 
+    // Update HV state machine
+    update_hv_state();
+
     // Check for contactor fault
     if (digitalRead(contactor_fault_pin) == LOW) {
       if (!contactor_fault) {
@@ -241,7 +274,6 @@ void BatteryManagementSystem::master_task_loop() {
         disable_contactors();
         if (pcs != nullptr) {
           pcs->enable_charging(false);
-          pcs->request_hv(false);
         }
         current_state = BMS_Error;
       }
@@ -266,7 +298,6 @@ void BatteryManagementSystem::master_task_loop() {
           disable_contactors();
           if (pcs != nullptr) {
             pcs->enable_charging(false);
-            pcs->request_hv(false);
           }
           current_state = BMS_Idle;
           break;
@@ -278,7 +309,6 @@ void BatteryManagementSystem::master_task_loop() {
           disable_contactors();
           if (pcs != nullptr) {
             pcs->enable_charging(false);
-            pcs->request_hv(false);
           }
           current_state = BMS_Idle;
           break;
@@ -366,9 +396,11 @@ void BatteryManagementSystem::bcc0_monitor_task_loop() {
       Serial.printf("BCC0: Init failed (error %d)\r\n", error);
       current_state = BMS_Error;
       hardware_initialized = false;
+      bcc0_initialized = false;
     } else {
       Serial.println("BCC0: Ready");
       hardware_initialized = true;
+      bcc0_initialized = true;
       current_state = BMS_Idle;
     }
   }
@@ -417,7 +449,6 @@ void BatteryManagementSystem::bcc0_monitor_task_loop() {
 // BCC1 monitor task
 void BatteryManagementSystem::bcc1_monitor_task_loop() {
   // Perform hardware initialization here (after scheduler starts)
-  static bool bcc1_initialized = false;
   if (!bcc1_initialized && bcc1_enabled) {
     Serial.println("BCC1: Waiting for BCC0...");
     vTaskDelay(pdMS_TO_TICKS(3000)); // Wait for BCC0 to init first
@@ -636,6 +667,150 @@ bool BatteryManagementSystem::has_reached_target_voltage(uint32_t *cell_voltages
   return true;
 }
 
+// HV Connection State Machine Implementation
+void BatteryManagementSystem::hv_connect() {
+  if (contactor_fault) {
+    Serial.println("BMS: Cannot connect HV - contactor fault detected");
+    hv_state = HV_Fault;
+    return;
+  }
+
+  if (ivt_shunt == nullptr || !ivt_shunt->is_alive()) {
+    Serial.println("BMS: Cannot connect HV - IVT shunt not available");
+    hv_state = HV_Fault;
+    return;
+  }
+
+  Serial.println("BMS: Starting HV connection sequence");
+  hv_state = HV_Precharge;
+  hv_state_entry_time = millis();
+  precharge_start_time = millis();
+
+  // Step 1: Close negative contactor (IN2/OUT2)
+  Serial.println("BMS: Step 1 - Closing negative contactor");
+  digitalWrite(contactor_enable_pin, HIGH);      // nSLEEP = HIGH (device awake)
+  digitalWrite(negative_contactor_pin, HIGH);    // IN2 = HIGH (OUT2 energizes negative contactor)
+  digitalWrite(positive_contactor_pin, LOW);     // IN1 = LOW (precharge not active yet, will be controlled by external circuit)
+}
+
+void BatteryManagementSystem::hv_disconnect() {
+  Serial.println("BMS: Disconnecting HV system");
+  hv_state = HV_Shutdown;
+  hv_state_entry_time = millis();
+
+  // Open both contactors immediately
+  digitalWrite(positive_contactor_pin, LOW);   // IN1 = LOW (OUT1 disabled)
+  digitalWrite(negative_contactor_pin, LOW);   // IN2 = LOW (OUT2 disabled)
+
+  // Verify disconnection using IVT-S
+  if (ivt_shunt != nullptr && ivt_shunt->is_alive()) {
+    delay(100);  // Wait for contactors to open
+    float hv_bus_voltage = ivt_shunt->get_voltage2();
+    if (hv_bus_voltage < 10.0f) {
+      Serial.println("BMS: HV bus discharged successfully");
+    } else {
+      Serial.printf("BMS: Warning - HV bus still at %.1f V after disconnect\r\n", hv_bus_voltage);
+    }
+  }
+
+  hv_state = HV_Disabled;
+  Serial.println("BMS: HV system disabled");
+}
+
+bool BatteryManagementSystem::is_precharge_complete() {
+  if (ivt_shunt == nullptr || !ivt_shunt->is_alive()) {
+    return false;
+  }
+
+  // IVT-S Voltage 1 = Pack voltage
+  // IVT-S Voltage 2 = HV bus voltage
+  float pack_voltage = ivt_shunt->get_voltage();
+  float hv_bus_voltage = ivt_shunt->get_voltage2();
+
+  float voltage_diff = abs(pack_voltage - hv_bus_voltage);
+
+  Serial.printf("BMS: Precharge check - Pack: %.1f V, HV Bus: %.1f V, Diff: %.1f V\r\n",
+                pack_voltage, hv_bus_voltage, voltage_diff);
+
+  return (voltage_diff <= hv_config.precharge_voltage_margin_v);
+}
+
+void BatteryManagementSystem::update_hv_state() {
+  uint32_t current_time = millis();
+  uint32_t time_in_state = current_time - hv_state_entry_time;
+
+  switch (hv_state) {
+    case HV_Disabled:
+      // Nothing to do, waiting for connection request
+      break;
+
+    case HV_Precharge: {
+      // Check for timeout
+      uint32_t precharge_time = current_time - precharge_start_time;
+      if (precharge_time > hv_config.precharge_timeout_ms) {
+        Serial.println("BMS: Precharge timeout!");
+        hv_disconnect();
+        hv_state = HV_Fault;
+        break;
+      }
+
+      // Check if precharge is complete
+      if (time_in_state >= hv_config.precharge_check_interval_ms) {
+        if (is_precharge_complete()) {
+          Serial.println("BMS: Precharge complete - closing positive contactor");
+          // Step 3: Close positive contactor (IN1/OUT1)
+          digitalWrite(positive_contactor_pin, HIGH);  // IN1 = HIGH (OUT1 energizes positive contactor)
+
+          // Step 4: Precharge should be disabled by external circuit when positive contactor closes
+          Serial.println("BMS: HV system active");
+          hv_state = HV_Active;
+          hv_state_entry_time = current_time;
+        } else {
+          // Update check timestamp
+          hv_state_entry_time = current_time;
+        }
+      }
+      break;
+    }
+
+    case HV_Active:
+      // Verify contactors are still closed and voltages are stable
+      if (ivt_shunt != nullptr && ivt_shunt->is_alive()) {
+        float pack_voltage = ivt_shunt->get_voltage();
+        float hv_bus_voltage = ivt_shunt->get_voltage2();
+        float voltage_diff = abs(pack_voltage - hv_bus_voltage);
+
+        // If voltage difference is too large, something is wrong
+        if (voltage_diff > hv_config.precharge_voltage_margin_v * 2.0f) {
+          Serial.printf("BMS: HV voltage mismatch detected! Pack: %.1f V, Bus: %.1f V\r\n",
+                       pack_voltage, hv_bus_voltage);
+          hv_disconnect();
+          hv_state = HV_Fault;
+        }
+      }
+      break;
+
+    case HV_Shutdown:
+      // Handled by hv_disconnect()
+      break;
+
+    case HV_Fault:
+      // Stay in fault state until reset
+      disable_contactors();
+      break;
+
+    default:
+      break;
+  }
+}
+
+// Legacy function - now redirects to HV state machine
+void BatteryManagementSystem::enable_contactors() {
+  hv_connect();
+}
+
+// Legacy enable_contactors implementation (commented out, replaced by hv_connect)
+/*
 void BatteryManagementSystem::enable_contactors() {
   if (contactor_fault) {
     Serial.println("BMS: Cannot enable contactors - fault detected");
@@ -649,7 +824,15 @@ void BatteryManagementSystem::enable_contactors() {
   digitalWrite(positive_contactor_pin, HIGH);  // IN1 = HIGH (OUT1 energizes contactor 1)
   digitalWrite(negative_contactor_pin, HIGH);  // IN2 = HIGH (OUT2 energizes contactor 2)
 }
+*/
 
+// Legacy function - now redirects to HV state machine
+void BatteryManagementSystem::disable_contactors() {
+  hv_disconnect();
+}
+
+// Legacy disable_contactors implementation (commented out, replaced by hv_disconnect)
+/*
 void BatteryManagementSystem::disable_contactors() {
   Serial.println("BMS: Disabling contactors");
   // DRV8874 in independent half-bridge mode: set both IN1 and IN2 LOW to disable both contactors
@@ -657,6 +840,7 @@ void BatteryManagementSystem::disable_contactors() {
   digitalWrite(negative_contactor_pin, LOW);   // IN2 = LOW (OUT2 disabled, contactor 2 off)
   // Note: nSLEEP (contactor_enable_pin) stays HIGH to keep device awake
 }
+*/
 
 void BatteryManagementSystem::control_contactors(bool enable_contactor1, bool enable_contactor2) {
   // DRV8874 in independent half-bridge mode with two separate contactors
@@ -684,7 +868,7 @@ void BatteryManagementSystem::start_charging() {
     return;
   }
 
-  if (current_state == BMS_Idle || current_state == BMS_Cooldown) {
+  if (current_state == BMS_Idle) {
     Serial.println("BMS: Starting charging cycle");
 
     // Signal EVSE we're ready to charge
@@ -695,7 +879,6 @@ void BatteryManagementSystem::start_charging() {
     // Start PCS if configured
     if (pcs != nullptr) {
       Serial.println("BMS: Enabling PCS");
-      pcs->request_hv(true);
       pcs->set_mode(PCS_MODE_CHARGE_ONLY);
       pcs->enable_charging(true);
 
@@ -707,7 +890,7 @@ void BatteryManagementSystem::start_charging() {
     enable_contactors();
     current_state = BMS_Charging;
   } else {
-    const char* state_str[] = {"Initialization", "Idle", "Charging", "Cell Balancing", "Cooldown", "Sleep", "Error"};
+    const char* state_str[] = {"Initialization", "Idle", "Charging", "Cell Balancing", "Sleep", "Error"};
     Serial.printf("BMS: Already in state: %s\r\n", state_str[current_state]);
   }
 }
@@ -724,13 +907,12 @@ void BatteryManagementSystem::stop_charging() {
   if (pcs != nullptr) {
     Serial.println("BMS: Disabling PCS");
     pcs->enable_charging(false);
-    pcs->request_hv(false);
     pcs->set_mode(PCS_MODE_OFF);
   }
 
   disable_contactors();
   stop_cell_balancing(bcc0, bcc0_config->cell_count);
-  current_state = BMS_Cooldown;
+  current_state = BMS_Idle;
 }
 
 void BatteryManagementSystem::force_balance_cells() {
@@ -1112,31 +1294,179 @@ void BatteryManagementSystem::set_led_color(uint8_t led, uint32_t color) {
 
 void BatteryManagementSystem::set_state_leds(uint32_t color) {
   if (!status_leds) return;
-  // LEDs 0-3 for state indication
-  for (uint8_t i = 0; i < 4; i++) {
+  // LEDs 0-1 for BMS state indication (LED 2 is now dedicated to HV state)
+  for (uint8_t i = 0; i < 2; i++) {
     status_leds->setPixelColor(i, color);
   }
 }
 
-void BatteryManagementSystem::update_contactor_leds() {
+void BatteryManagementSystem::update_pcs_led() {
   if (!status_leds) return;
 
-  // Two independent contactors controlled by IN1 and IN2
-  bool contactor1_on = digitalRead(positive_contactor_pin) == HIGH;  // IN1/OUT1
-  bool contactor2_on = digitalRead(negative_contactor_pin) == HIGH;  // IN2/OUT2
+  // LED 4: PCS (Power Conversion System) status
+  if (pcs == nullptr) {
+    // PCS not configured - LED off
+    set_led_color(4, color_rgb(0, 0, 0));
+    return;
+  }
 
-  // LED 4: Contactor status (Yellow when both enabled, orange when one enabled, off when both disabled)
-  if (contactor1_on && contactor2_on) {
-    set_led_color(4, color_rgb(255, 255, 0));  // Yellow - both contactors on
-  } else if (contactor1_on || contactor2_on) {
-    set_led_color(4, color_rgb(255, 128, 0));  // Orange - one contactor on
-  } else {
-    set_led_color(4, color_rgb(0, 0, 0));      // Off - both contactors off
+  PCSState pcs_state = pcs->get_state();
+  bool charging = pcs->is_charging();
+  bool dcdc_active = pcs->is_dcdc_active();
+  uint8_t brightness;
+
+  switch (pcs_state) {
+    case PCS_STATE_INIT:
+      // Purple - initializing
+      set_led_color(4, color_rgb(128, 0, 128));
+      break;
+
+    case PCS_STATE_STANDBY:
+      // Dim blue - standby, ready but not active
+      set_led_color(4, color_rgb(0, 0, 64));
+      break;
+
+    case PCS_STATE_CHARGE_PREP:
+      // Cyan pulsing - preparing to charge
+      led_animation_step = (led_animation_step + 1) % 100;
+      brightness = (led_animation_step < 50) ? (led_animation_step * 5) : ((100 - led_animation_step) * 5);
+      set_led_color(4, color_rgb(0, brightness, brightness));
+      break;
+
+    case PCS_STATE_CHARGING:
+      // Green solid or pulsing based on activity
+      if (charging) {
+        set_led_color(4, color_rgb(0, 255, 0));  // Bright green - actively charging
+      } else {
+        set_led_color(4, color_rgb(0, 128, 0));  // Dim green - charging mode but not active
+      }
+      break;
+
+    case PCS_STATE_CHARGE_STOP:
+      // Yellow - stopping charge
+      set_led_color(4, color_rgb(255, 255, 0));
+      break;
+
+    case PCS_STATE_DCDC_ACTIVE:
+      // Blue solid - DCDC active
+      if (dcdc_active) {
+        set_led_color(4, color_rgb(0, 128, 255));  // Light blue - DCDC active
+      } else {
+        set_led_color(4, color_rgb(0, 64, 128));   // Darker blue - DCDC mode but not active
+      }
+      break;
+
+    case PCS_STATE_FAULT:
+      // Flashing red - PCS fault
+      led_animation_step = (led_animation_step + 1) % 60;
+      if (led_animation_step < 30) {
+        set_led_color(4, color_rgb(255, 0, 0));  // Bright red
+      } else {
+        set_led_color(4, color_rgb(0, 0, 0));    // Off
+      }
+      break;
+
+    default:
+      set_led_color(4, color_rgb(0, 0, 0));
+      break;
+  }
+}
+
+void BatteryManagementSystem::update_evse_led() {
+  if (!status_leds || !evse) return;
+
+  // LED 3: EVSE proximity and control pilot status
+  EVSEState state = evse->get_state();
+  EVSECableLimit cable_limit = evse->get_cable_limit();
+
+  switch (state) {
+    case EVSE_STATE_A:
+      // No vehicle connected - Off
+      set_led_color(3, color_rgb(0, 0, 0));
+      break;
+
+    case EVSE_STATE_B:
+      // Vehicle connected, not ready - Cyan (blue-green)
+      set_led_color(3, color_rgb(0, 128, 128));
+      break;
+
+    case EVSE_STATE_C:
+      // Vehicle ready to charge / charging - Green
+      set_led_color(3, color_rgb(0, 255, 0));
+      break;
+
+    case EVSE_STATE_D:
+      // Vehicle with ventilation required - Magenta
+      set_led_color(3, color_rgb(255, 0, 255));
+      break;
+
+    case EVSE_STATE_E:
+      // No power / fault - Red flashing
+      led_animation_step = (led_animation_step + 1) % 60;
+      if (led_animation_step < 30) {
+        set_led_color(3, color_rgb(255, 0, 0));
+      } else {
+        set_led_color(3, color_rgb(0, 0, 0));
+      }
+      break;
+
+    case EVSE_FAULT:
+      // Fault - Red solid
+      set_led_color(3, color_rgb(255, 0, 0));
+      break;
+
+    default:
+      set_led_color(3, color_rgb(0, 0, 0));
+      break;
+  }
+}
+
+void BatteryManagementSystem::update_hv_led() {
+  if (!status_leds) return;
+  uint8_t brightness;
+
+  // LED 2: HV system state
+  switch (hv_state) {
+    case HV_Disabled:
+      // Off - HV system disabled
+      set_led_color(2, color_rgb(0, 0, 0));
+      break;
+
+    case HV_Precharge:
+      // Yellow pulsing - precharging
+      led_animation_step = (led_animation_step + 1) % 100;
+      brightness = (led_animation_step < 50) ? (led_animation_step * 5) : ((100 - led_animation_step) * 5);
+      set_led_color(2, color_rgb(brightness, brightness, 0));  // Yellow pulse
+      break;
+
+    case HV_Active:
+      // Solid green - HV active and stable
+      set_led_color(2, color_rgb(0, 255, 0));
+      break;
+
+    case HV_Fault:
+      // Flashing red - HV fault
+      led_animation_step = (led_animation_step + 1) % 60;
+      if (led_animation_step < 30) {
+        set_led_color(2, color_rgb(255, 0, 0));  // Bright red
+      } else {
+        set_led_color(2, color_rgb(0, 0, 0));    // Off
+      }
+      break;
+
+    case HV_Shutdown:
+      // Orange - shutting down
+      set_led_color(2, color_rgb(255, 128, 0));
+      break;
+
+    default:
+      set_led_color(2, color_rgb(0, 0, 0));
+      break;
   }
 }
 
 void BatteryManagementSystem::led_pattern_idle() {
-  // Soft blue breathing pattern on state LEDs (0-3)
+  // Soft blue breathing pattern on state LEDs (0-1)
   led_animation_step = (led_animation_step + 1) % 100;
   uint8_t brightness = (led_animation_step < 50) ? (led_animation_step * 2) : ((100 - led_animation_step) * 2);
   brightness = brightness / 4; // Keep it dim
@@ -1144,34 +1474,32 @@ void BatteryManagementSystem::led_pattern_idle() {
 }
 
 void BatteryManagementSystem::led_pattern_charging() {
-  // Green wave/chase pattern showing charging progress on state LEDs (0-3)
-  led_animation_step = (led_animation_step + 1) % 4;
+  // Green wave/chase pattern showing charging progress on state LEDs (0-1)
+  led_animation_step = (led_animation_step + 1) % 2;
 
-  for (uint8_t i = 0; i < 4; i++) {
+  for (uint8_t i = 0; i < 2; i++) {
     if (i == led_animation_step) {
       set_led_color(i, color_rgb(0, 255, 0)); // Bright green
-    } else if (i == (led_animation_step + 3) % 4) {
-      set_led_color(i, color_rgb(0, 64, 0)); // Dim green trailing
     } else {
-      set_led_color(i, color_rgb(0, 16, 0)); // Very dim green
+      set_led_color(i, color_rgb(0, 64, 0)); // Dim green
     }
   }
 }
 
 void BatteryManagementSystem::led_pattern_balancing() {
-  // Yellow/Orange pulsing pattern on state LEDs (0-3)
+  // Yellow/Orange pulsing pattern on state LEDs (0-1)
   led_animation_step = (led_animation_step + 1) % 100;
   uint8_t brightness = (led_animation_step < 50) ? (led_animation_step * 5) : ((100 - led_animation_step) * 5);
   set_state_leds(color_rgb(brightness, brightness / 2, 0)); // Orange
 }
 
 void BatteryManagementSystem::led_pattern_complete() {
-  // Solid green on state LEDs (0-3)
+  // Solid green on state LEDs (0-1)
   set_state_leds(color_rgb(0, 128, 0)); // Medium green
 }
 
 void BatteryManagementSystem::led_pattern_error() {
-  // Flashing red on state LEDs (0-3)
+  // Flashing red on state LEDs (0-1)
   led_animation_step = (led_animation_step + 1) % 60;
   if (led_animation_step < 30) {
     set_state_leds(color_rgb(255, 0, 0)); // Bright red
@@ -1183,7 +1511,7 @@ void BatteryManagementSystem::led_pattern_error() {
 void BatteryManagementSystem::update_status_leds() {
   if (!status_leds) return;
 
-  // Update state LEDs (0-3) based on BMS state
+  // Update BMS state LEDs (0-1)
   switch (current_state) {
     case BMS_Initialization:
       // Purple - system initializing
@@ -1191,7 +1519,6 @@ void BatteryManagementSystem::update_status_leds() {
       break;
 
     case BMS_Idle:
-    case BMS_Cooldown:
       led_pattern_idle();
       break;
 
@@ -1221,8 +1548,78 @@ void BatteryManagementSystem::update_status_leds() {
       break;
   }
 
-  // Update contactor LEDs (3-4)
-  update_contactor_leds();
+  // Update HV state LED (2)
+  update_hv_led();
+
+  // Update EVSE LED (3)
+  update_evse_led();
+
+  // Update PCS LED (4)
+  update_pcs_led();
 
   status_leds->show();
+}
+
+// HV CAN task - periodically broadcasts HV system state and BMS state
+void BatteryManagementSystem::hv_can_task_loop() {
+  Serial.println("HV CAN Task: Started");
+
+  // Wait for hardware initialization to complete
+  while (!hardware_initialized) {
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+
+  Serial.println("HV CAN Task: Hardware initialized, starting CAN broadcasts");
+
+  const uint32_t HV_STATUS_CAN_ID = 0x400;  // CAN ID for HV status message
+  const uint32_t BROADCAST_INTERVAL_MS = 100;  // Send status every 100ms (10 Hz)
+
+  while (true) {
+    if (hv_can != nullptr) {
+      // Prepare HV status message
+      // Byte 0: HV State
+      // Byte 1: BMS State
+      // Byte 2-3: Stack voltage (MSB first, in 0.1V units)
+      // Byte 4-7: Reserved for future use
+
+      uint8_t data[8] = {0};
+
+      // Byte 0: HV State
+      data[0] = static_cast<uint8_t>(hv_state);
+
+      // Byte 1: BMS State
+      data[1] = static_cast<uint8_t>(current_state);
+
+      // Byte 2-3: Stack voltage in 0.1V units (e.g., 240 = 24.0V)
+      uint16_t stack_voltage_dv = static_cast<uint16_t>(stack_voltage_filtered_uv / 100000);  // Convert uV to 0.1V
+      data[2] = (stack_voltage_dv >> 8) & 0xFF;  // MSB
+      data[3] = stack_voltage_dv & 0xFF;         // LSB
+
+      // Byte 4: Fault flags (bit-packed)
+      data[4] = 0;
+      if (has_overvoltage_fault) data[4] |= (1 << 0);
+      if (has_undervoltage_fault) data[4] |= (1 << 1);
+      if (has_temperature_fault) data[4] |= (1 << 2);
+      if (has_cb_open_fault) data[4] |= (1 << 3);
+      if (has_cb_short_fault) data[4] |= (1 << 4);
+      if (contactor_fault) data[4] |= (1 << 5);
+      if (communication_lost) data[4] |= (1 << 6);
+
+      // Byte 5: Additional status
+      data[5] = 0;
+      if (evse != nullptr && evse->is_connected()) data[5] |= (1 << 0);
+      if (evse != nullptr && evse->is_ready_to_charge()) data[5] |= (1 << 1);
+      if (pcs != nullptr && pcs->is_charging()) data[5] |= (1 << 2);
+
+      // Bytes 6-7: Reserved
+      data[6] = 0;
+      data[7] = 0;
+
+      // Send CAN message
+      hv_can->sendMessage(HV_STATUS_CAN_ID, data, 8);
+    }
+
+    // Wait for next broadcast interval
+    vTaskDelay(pdMS_TO_TICKS(BROADCAST_INTERVAL_MS));
+  }
 }

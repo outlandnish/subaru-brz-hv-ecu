@@ -3,7 +3,7 @@
 #include "SPI.h"
 #include "TPLSPI.h"
 #include "BatteryCellController.h"
-#include "bms.h"
+#include "bms/bms.h"
 #include "hal/dma_config.h"
 #include "hal/hv-ecu-v0-pins.h"
 #include "can.h"

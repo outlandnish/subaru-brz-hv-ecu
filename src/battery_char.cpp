@@ -16,8 +16,8 @@
 #include "TPLSPI.h"
 #include "BatteryCellController.h"
 #include "bcc/bcc_config.h"
-#include "dma_config.h"
-#include "hv-ecu-v0-pins.h"
+#include "hal/dma_config.h"
+#include "hal/hv-ecu-v0-pins.h"
 
 #define Serial SerialUSB
 

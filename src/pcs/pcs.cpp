@@ -15,7 +15,6 @@ TeslaM3PCSController::TeslaM3PCSController(uint8_t enable_pin, uint8_t charge_pi
     pcs_enabled(false),
     charge_enabled(false),
     dcdc_enabled(false),
-    hv_requested(false),
     command_queue(nullptr),
     last_0x22a_ms(0),
     last_0x2b2_ms(0),
@@ -230,10 +229,6 @@ void TeslaM3PCSController::process_command_queue() {
       case PCS_CMD_ENABLE_DCDC:
         enable_dcdc(cmd.value != 0);
         break;
-
-      case PCS_CMD_REQUEST_HV:
-        request_hv(cmd.value != 0);
-        break;
     }
   }
 }
@@ -350,10 +345,6 @@ void TeslaM3PCSController::enable_dcdc(bool enable) {
   pcs_enabled = (charge_enabled || dcdc_enabled);
 }
 
-void TeslaM3PCSController::request_hv(bool request) {
-  hv_requested = request;
-}
-
 void TeslaM3PCSController::task_loop() {
   while (true) {
     update();
@@ -414,16 +405,6 @@ bool TeslaM3PCSController::enable_dcdc_async(bool enable) {
   PCSCommand cmd;
   cmd.type = PCS_CMD_ENABLE_DCDC;
   cmd.value = enable ? 1 : 0;
-
-  return xQueueSend(command_queue, &cmd, pdMS_TO_TICKS(10)) == pdTRUE;
-}
-
-bool TeslaM3PCSController::request_hv_async(bool request) {
-  if (command_queue == nullptr) return false;
-
-  PCSCommand cmd;
-  cmd.type = PCS_CMD_REQUEST_HV;
-  cmd.value = request ? 1 : 0;
 
   return xQueueSend(command_queue, &cmd, pdMS_TO_TICKS(10)) == pdTRUE;
 }

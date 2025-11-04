@@ -17,8 +17,7 @@ enum PCSCommandType : uint8_t {
   PCS_CMD_SET_TARGET_VOLTAGE,
   PCS_CMD_SET_MAX_POWER,
   PCS_CMD_ENABLE_CHARGING,
-  PCS_CMD_ENABLE_DCDC,
-  PCS_CMD_REQUEST_HV
+  PCS_CMD_ENABLE_DCDC
 };
 
 struct PCSCommand {
@@ -69,7 +68,6 @@ private:
   bool pcs_enabled;
   bool charge_enabled;
   bool dcdc_enabled;
-  bool hv_requested;
 
   // Command queue for FreeRTOS tasks
   QueueHandle_t command_queue;
@@ -112,7 +110,6 @@ public:
   bool set_max_charge_power_w_async(uint16_t max_power_w); // Queue-based for other tasks
   bool enable_charging_async(bool enable);                 // Queue-based for other tasks
   bool enable_dcdc_async(bool enable);                     // Queue-based for other tasks
-  bool request_hv_async(bool request);                     // Queue-based for other tasks
 
   // Direct methods (only for PCS task internal use)
   void set_target_voltage_mv(uint16_t voltage_mv);
@@ -120,7 +117,6 @@ public:
   void set_max_charge_power_w(uint16_t max_power_w);
   void enable_charging(bool enable);
   void enable_dcdc(bool enable);
-  void request_hv(bool request);
 
   // State accessors
   PCSState get_state() const { return current_state; }
@@ -131,7 +127,6 @@ public:
   bool is_enabled() const { return pcs_enabled; }
   bool is_charging() const { return charge_enabled; }
   bool is_dcdc_active() const { return dcdc_enabled; }
-  bool is_hv_requested() const { return hv_requested; }
 
   // Task functions for FreeRTOS
   void task_loop();

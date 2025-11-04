@@ -2,32 +2,21 @@
 
 An intelligent battery management system for charging 6S2P (6 cells in series, 2 in parallel) lithium battery packs with automatic cell balancing and visual status indicators.
 
-## Features
-
-- **Intelligent Charging**: Automatically manages charging cycle with configurable target voltage
-- **High-Speed Monitoring**: 50 Hz voltage measurements with exponential filtering for smooth, responsive readings
-- **Cell Balancing**: Monitors individual cell voltages and balances cells when imbalance exceeds threshold
-- **Fault Detection**: Monitors overvoltage, undervoltage, temperature, and cell balancing faults
-- **Visual Status**: 5 NeoPixel LEDs provide real-time status indication
-- **Serial Console**: Interactive command-line interface for monitoring and control
-- **FreeRTOS**: Multi-tasking architecture for reliable operation
-- **Safety**: Automotive-grade fault monitoring with 50 Hz sampling for rapid fault detection
-
 ## Hardware
 
 - **MCU**: STM32 (configured for BRZ HV ECU)
 - **BMS IC**: NXP MC33772C Battery Cell Controller
 - **Interface**: TPL (Transformer Physical Layer) SPI communication
 - **LEDs**: 5x NeoPixel (WS2812B) status indicators
-- **Contactor**: Single high-voltage relay controlled via H-bridge driver with fault detection
 
 ## NeoPixel Status Indicators
 
-The system uses 5 NeoPixels divided into two groups:
-- **LEDs 0-3**: BMS State indicators
+The system uses 5 NeoPixels divided into three groups:
+- **LEDs 0-2**: BMS State indicators
+- **LED 3**: EVSE (charging connector) status indicator
 - **LED 4**: Contactor status indicator
 
-### BMS State Indicators (LEDs 0-3)
+### BMS State Indicators (LEDs 0-2)
 
 | Color | Pattern | State | Description |
 |-------|---------|-------|-------------|
@@ -39,12 +28,24 @@ The system uses 5 NeoPixels divided into two groups:
 | **Red** | Flashing | Error | Fault detected (contactor/communication fault) |
 | **Off** | - | Sleep | System in low-power mode |
 
+### EVSE Status Indicator (LED 3)
+
+| Color | Pattern | State | Description |
+|-------|---------|-------|-------------|
+| **Off** | - | State A | No charging cable connected |
+| **Cyan** | Solid | State B | Cable connected, vehicle not ready to charge |
+| **Green** | Solid | State C | Vehicle ready to charge / charging |
+| **Magenta** | Solid | State D | Vehicle requires ventilation (uncommon) |
+| **Red** | Flashing | State E | No power available from EVSE |
+| **Red** | Solid | Fault | EVSE fault detected |
+
 ### Contactor Status Indicator (LED 4)
 
-| LED | Color | State | Description |
-|-----|-------|-------|-------------|
-| **LED 4** | Yellow | Enabled | Contactor is energized (IN1=HIGH, IN2=LOW) |
-| **LED 4** | Off | Disabled | Contactor is de-energized (both inputs LOW) |
+| Color | State | Description |
+|-------|-------|-------------|
+| **Yellow** | Both Enabled | Both contactors energized (IN1=HIGH, IN2=HIGH) |
+| **Orange** | One Enabled | One contactor energized |
+| **Off** | Disabled | Both contactors de-energized (both inputs LOW) |
 
 ## Serial Console Commands
 
@@ -69,7 +70,6 @@ The system uses 5 NeoPixels divided into two groups:
 | `sleep` | Put BCC into low-power sleep mode |
 | `wakeup` | Wake BCC from sleep mode |
 | `reboot` | Software reset (restart application) |
-| `dfu` | Reboot into USB DFU bootloader mode |
 
 ### Configuration Commands
 
@@ -117,13 +117,6 @@ Stopping charging...
 Putting BCC into sleep mode...
 Performing software reset...
 [Device safely shuts down and restarts]
-
-> dfu
-=== Entering USB DFU Mode ===
-Stopping charging...
-Putting BCC into sleep mode...
-Rebooting into bootloader...
-[Device safely shuts down and reboots into DFU mode]
 ```
 
 ### Special Commands
@@ -151,48 +144,6 @@ Use this to:
 - Apply configuration changes
 - Recover from errors or unexpected states
 - Clean restart without power cycling
-
-**`dfu`** - Safely shuts down the BMS and reboots into USB DFU (Device Firmware Update) mode:
-1. Stops charging and disables contactors
-2. Stops cell balancing
-3. Puts BCC into sleep mode
-4. Sets magic RAM flag
-5. Performs system reset
-6. On reboot, jumps to STM32 bootloader (before USB/serial init)
-
-Use this to:
-- Update firmware via USB using STM32CubeProgrammer or dfu-util
-- Recover from bricked firmware
-- Install new software versions
-
-**How it works:**
-- Uses a "magic RAM flag" (0xDEADBEEF) that survives system reset
-- Flag stored in `.noinit` RAM section (preserved across soft resets)
-- On reboot, `setup()` checks flag BEFORE any peripheral initialization
-- If flag is set, jumps directly to STM32 bootloader at 0x1FFF0000
-- Bootloader enumerates as USB DFU device
-
-**Troubleshooting:**
-If device doesn't appear as DFU device:
-1. Check USB cable is connected and working
-2. Verify device powered on
-3. Look for "STM Device in DFU Mode" in device manager (Windows) or `lsusb` (Linux/Mac)
-4. If still not working, you may need SWD programmer to recover
-
-Once in DFU mode, flash firmware using:
-```bash
-# dfu-util (command line)
-dfu-util -a 0 -s 0x08000000 -D firmware.bin
-
-# STM32CubeProgrammer (GUI)
-# Connect via USB, select "Download" and flash .bin file
-```
-
-**Important Notes:**
-- After flashing, device will auto-reboot into new firmware
-- No physical buttons needed - fully software-controlled DFU entry
-- Safe for HV systems: Always shuts down charging/balancing before DFU
-- If DFU entry fails, use SWD programming via ST-Link or J-Link as backup
 
 ## Charging Algorithm
 
@@ -245,16 +196,6 @@ voltage_filter_alpha     = 0.2     // Exponential filter coefficient
    - Processes user commands
    - Provides interactive interface
 
-### BMS States
-
-- `BMS_Initialization`: System starting up
-- `BMS_Idle`: Ready to charge
-- `BMS_Charging`: Active charging
-- `BMS_CellBalancing`: Balancing cells
-- `BMS_Cooldown`: Stopped by user
-- `BMS_Sleep`: Low-power mode
-- `BMS_Error`: Fault detected
-
 ## Safety Features
 
 - **Contactor Fault Detection**: Monitors H-bridge fault pin, immediately disables contactor on fault
@@ -270,28 +211,8 @@ voltage_filter_alpha     = 0.2     // Exponential filter coefficient
 - **Error State**: System locks in error state until reset on critical faults
 - **Visual Indicators**:
   - Red flashing state LEDs immediately indicate fault conditions
-  - Contactor LEDs (3-4) show real-time H-bridge and contactor status for safety verification
-
-## Pin Configuration
-
-### BMS0 (MC33772C)
-- TX SCK: PA5
-- TX CS: PA6
-- TX DATA: PA7
-- RX SCK: PA9
-- RX CS: PB9
-- RX DATA: PA10
-- ENABLE: PE8
-- INTB: PE9
-
-### H-Bridge Contactor Driver
-- H-Bridge IN1: PC0 (HIGH to enable contactor)
-- H-Bridge IN2: PC1 (LOW to enable contactor)
-- H-Bridge Enable: PC2 (enable signal)
-- H-Bridge Fault: PC3 (fault input)
-
-### Status LEDs
-- NeoPixel Data: PD5 (5 LEDs)
+  - EVSE LED (3) shows charging cable connection and control pilot status
+  - Contactor LED (4) shows real-time H-bridge and contactor status for safety verification
 
 ## Building and Flashing
 

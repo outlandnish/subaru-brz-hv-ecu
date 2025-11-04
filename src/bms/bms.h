@@ -10,12 +10,28 @@
 #include "can.h"
 #include "ivt-s/ivt_shunt.h"
 
+// HV System States
+enum HV_State : uint8_t {
+  HV_Disabled,      // HV system disabled, contactors open
+  HV_Precharge,     // Precharge sequence in progress
+  HV_Active,        // HV system active, contactors closed
+  HV_Fault,         // HV system fault condition
+  HV_Shutdown       // HV system shutting down
+};
+
+// HV Connection Configuration
+struct HVConnectionConfig {
+  float precharge_voltage_margin_v;  // Acceptable voltage difference for precharge completion (V)
+  uint32_t precharge_timeout_ms;     // Maximum time to wait for precharge (ms)
+  uint32_t precharge_check_interval_ms; // How often to check precharge status (ms)
+};
+
+// BMS Operating States
 enum BMS_State : uint8_t {
   BMS_Initialization,
   BMS_Idle,
   BMS_Charging,
   BMS_CellBalancing,
-  BMS_Cooldown,
   BMS_Sleep,
   BMS_Error
 };
@@ -46,6 +62,9 @@ class BatteryManagementSystem {
   BatteryCellController *bcc1;
 
   BMS_State current_state;
+  HV_State hv_state;
+  uint32_t hv_state_entry_time;  // Time when current HV state was entered
+  uint32_t precharge_start_time;  // Time when precharge started
 
   BatteryCellControllerConfig *bcc0_config, *bcc1_config;
   SPIClass *bcc0_tx_spi, *bcc0_rx_spi;
@@ -53,6 +72,7 @@ class BatteryManagementSystem {
   bcc_device_t *devices_0, *devices_1;
 
   BMSChargingConfig charging_config;
+  HVConnectionConfig hv_config;
 
   // Cell voltage tracking (raw and filtered)
   uint32_t cell_voltages_uv[BCC_MAX_CELLS];           // Raw measurements
@@ -74,6 +94,8 @@ class BatteryManagementSystem {
 
   // Initialization flag and communication tracking
   bool hardware_initialized;
+  bool bcc0_initialized;
+  bool bcc1_initialized;
   uint32_t last_successful_measurement;
   uint32_t communication_timeout_ms;
   bool communication_lost;
@@ -112,11 +134,13 @@ class BatteryManagementSystem {
   TaskHandle_t master_task_handle;
   TaskHandle_t bcc0_monitor_task_handle;
   TaskHandle_t bcc1_monitor_task_handle;
+  TaskHandle_t hv_can_task_handle;
 
   // Private methods
   void master_task_loop();
   void bcc0_monitor_task_loop();
   void bcc1_monitor_task_loop();
+  void hv_can_task_loop();
 
   bool measure_cell_voltages(BatteryCellController *bcc, uint32_t *cell_voltages);
   bool measure_stack_voltage(BatteryCellController *bcc, uint32_t *stack_voltage);
@@ -131,15 +155,24 @@ class BatteryManagementSystem {
   float get_max_cell_voltage_diff_mv(uint32_t *cell_voltages, uint8_t cell_count);
   bool has_reached_target_voltage(uint32_t *cell_voltages, uint8_t cell_count);
 
+  // HV system control
+  void hv_connect();          // Start HV connection sequence
+  void hv_disconnect();       // Disconnect HV system
+  void update_hv_state();     // Update HV state machine
+  bool is_precharge_complete(); // Check if precharge voltage reached
+
+  // Legacy contactor control (will be replaced by HV state machine)
   void enable_contactors();
   void disable_contactors();
   void control_contactors(bool enable_contactor1, bool enable_contactor2);
 
   // LED control
   void update_status_leds();
-  void update_contactor_leds();
+  void update_pcs_led();             // Update LED 4 for PCS state
+  void update_evse_led();
+  void update_hv_led();              // Update LED 2 for HV state
   void set_led_color(uint8_t led, uint32_t color);
-  void set_state_leds(uint32_t color);  // Set LEDs 0-2 for state indication
+  void set_state_leds(uint32_t color);  // Set LEDs 0-1 for BMS state indication
   void led_pattern_idle();
   void led_pattern_charging();
   void led_pattern_balancing();
@@ -151,6 +184,7 @@ class BatteryManagementSystem {
   static void master_task_wrapper(void *pvParameters);
   static void bcc0_monitor_task_wrapper(void *pvParameters);
   static void bcc1_monitor_task_wrapper(void *pvParameters);
+  static void hv_can_task_wrapper(void *pvParameters);
 
   public:
     BatteryManagementSystem(BatteryCellControllerConfig *config0,
@@ -178,7 +212,12 @@ class BatteryManagementSystem {
 
     // State and config getters
     BMS_State get_state() const { return current_state; }
+    HV_State get_hv_state() const { return hv_state; }
+    void set_hv_state(HV_State state) { hv_state = state; }
     BMSChargingConfig get_charging_config() const { return charging_config; }
+    bool is_bcc0_initialized() const { return bcc0_initialized; }
+    bool is_bcc1_initialized() const { return bcc1_initialized; }
+    bool is_bcc1_enabled() const { return bcc1_enabled; }
     void get_cell_voltages(uint32_t *voltages, uint8_t *count);
     void get_cell_voltages_filtered(uint32_t *voltages, uint8_t *count);
     uint32_t get_stack_voltage() const { return stack_voltage_uv; }
