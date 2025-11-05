@@ -1,3 +1,6 @@
 [submodule "lib/iso14229"]
 	path = lib/iso14229
-	url = https://github.com/driftregion/iso14229.git
+	url = https://github.com/outlandnish/iso14229.git
+[submodule "lib/bcc"]
+	path = lib/bcc
+	url = https://github.com/outlandnish/nxp-bcc-mc3377xb-driver
