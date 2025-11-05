@@ -12,11 +12,12 @@ An intelligent battery management system for charging 6S2P (6 cells in series, 2
 ## NeoPixel Status Indicators
 
 The system uses 5 NeoPixels divided into three groups:
-- **LEDs 0-2**: BMS State indicators
+- **LED 0-1**: BMS state
+- **LED 2**: HV status (disabled, pre-charge, active, fault, shutdown)
 - **LED 3**: EVSE (charging connector) status indicator
-- **LED 4**: Contactor status indicator
+- **LED 4**: PCS State (charge enabled/disabled, dcdc enabled / disabled, fault)
 
-### BMS State Indicators (LEDs 0-2)
+### BMS State Indicators (LEDs 0-1)
 
 | Color | Pattern | State | Description |
 |-------|---------|-------|-------------|
@@ -27,6 +28,15 @@ The system uses 5 NeoPixels divided into three groups:
 | **Orange** | Pulsing | Balancing | Cell balancing active |
 | **Red** | Flashing | Error | Fault detected (contactor/communication fault) |
 | **Off** | - | Sleep | System in low-power mode |
+
+### HV Status Indicator (LED 2)
+
+| Color | Pattern | State | Description |
+|-------|---------|-------|-------------|
+| **Green** | Solid | Active | HV active |
+| **Orange** | Solid | Shutdown | HV shutdown |
+| **Red** | Flashing | Fault | HV fault |
+| **Off** | - | Disabled | HV Disabled |
 
 ### EVSE Status Indicator (LED 3)
 
@@ -39,13 +49,9 @@ The system uses 5 NeoPixels divided into three groups:
 | **Red** | Flashing | State E | No power available from EVSE |
 | **Red** | Solid | Fault | EVSE fault detected |
 
-### Contactor Status Indicator (LED 4)
+### PCS Status Indicator (LED 4)
 
-| Color | State | Description |
-|-------|-------|-------------|
-| **Yellow** | Both Enabled | Both contactors energized (IN1=HIGH, IN2=HIGH) |
-| **Orange** | One Enabled | One contactor energized |
-| **Off** | Disabled | Both contactors de-energized (both inputs LOW) |
+
 
 ## Serial Console Commands
 

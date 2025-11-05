@@ -19,6 +19,12 @@ enum HV_State : uint8_t {
   HV_Shutdown       // HV system shutting down
 };
 
+// HV Connection Mode (what we're using HV power for)
+enum HV_Mode : uint8_t {
+  HV_MODE_CHARGING, // Charging mode (AC charger active)
+  HV_MODE_DRIVE     // Drive mode (DCDC only for 12V system)
+};
+
 // HV Connection Configuration
 struct HVConnectionConfig {
   float precharge_voltage_margin_v;  // Acceptable voltage difference for precharge completion (V)
@@ -63,6 +69,7 @@ class BatteryManagementSystem {
 
   BMS_State current_state;
   HV_State hv_state;
+  HV_Mode hv_mode;  // Current HV mode (charging or drive)
   uint32_t hv_state_entry_time;  // Time when current HV state was entered
   uint32_t precharge_start_time;  // Time when precharge started
 
@@ -115,9 +122,6 @@ class BatteryManagementSystem {
   // EVSE Controller
   EVSEController *evse;
 
-  // PCS Controller
-  TeslaM3PCSController *pcs;
-
   // IVT Current Shunt
   IVTShunt *ivt_shunt;
 
@@ -156,10 +160,10 @@ class BatteryManagementSystem {
   bool has_reached_target_voltage(uint32_t *cell_voltages, uint8_t cell_count);
 
   // HV system control
-  void hv_connect();          // Start HV connection sequence
-  void hv_disconnect();       // Disconnect HV system
-  void update_hv_state();     // Update HV state machine
-  bool is_precharge_complete(); // Check if precharge voltage reached
+  void hv_connect(HV_Mode mode);  // Start HV connection sequence with specified mode
+  void hv_disconnect();           // Disconnect HV system
+  void update_hv_state();         // Update HV state machine
+  bool is_precharge_complete();   // Check if precharge voltage reached
 
   // Legacy contactor control (will be replaced by HV state machine)
   void enable_contactors();
@@ -188,7 +192,7 @@ class BatteryManagementSystem {
 
   public:
     BatteryManagementSystem(BatteryCellControllerConfig *config0,
-                           BatteryCellControllerConfig *config1 = nullptr);
+                           BatteryCellControllerConfig *config1);
 
     bool initialize(uint16_t device_configuration[][BCC_INIT_CONF_REG_CNT]);
     void configure_settings(uint16_t config[][BCC_INIT_CONF_REG_CNT]);
@@ -196,18 +200,19 @@ class BatteryManagementSystem {
     void set_contactor_pins(uint8_t contactor1, uint8_t contactor2, uint8_t enable, uint8_t fault);
     void set_status_leds(Adafruit_NeoPixel *leds);
 
-    // EVSE, PCS, and IVT configuration
+    // EVSE and IVT configuration
     void set_evse(EVSEController *evse_controller);
-    void set_pcs(TeslaM3PCSController *pcs_controller);
     void set_ivt_shunt(IVTShunt *shunt);
     void set_can_buses(CANBus *ipc_can_bus, CANBus *m3_can_bus, CANBus *hv_can_bus);
 
     // Start the BMS tasks
     bool start_tasks();
 
-    // Charging control
-    void start_charging();
-    void stop_charging();
+    // HV operation control
+    void start_charging();      // Start charging mode (precharge + charging)
+    void start_drive_mode();    // Start drive mode (precharge + DCDC only)
+    void stop_charging();       // Stop charging
+    void stop_hv_system();      // Stop HV system (any mode)
     void force_balance_cells();
 
     // State and config getters
@@ -226,9 +231,24 @@ class BatteryManagementSystem {
     void get_fault_status(uint16_t *faults);
     bool has_faults() const;
 
-    // EVSE, PCS, and IVT status
+    uint16_t get_bcc0_total_cell_count() const {
+      return bcc0_config->cell_count * bcc0_config->device_count;
+    }
+
+    uint16_t get_bcc1_total_cell_count() const {
+      return bcc1_config->cell_count * bcc1_config->device_count;
+    }
+
+    uint16_t get_target_stack_voltage() const {
+      const uint16_t total_bcc0_cells = get_bcc0_total_cell_count();
+      const uint16_t total_bcc1_cells = get_bcc1_total_cell_count();
+
+      return (uint16_t)(charging_config.target_cell_voltage *
+                        (total_bcc0_cells + total_bcc1_cells));
+    }
+
+    // EVSE and IVT status
     EVSEController* get_evse() const { return evse; }
-    TeslaM3PCSController* get_pcs() const { return pcs; }
     IVTShunt* get_ivt_shunt() const { return ivt_shunt; }
 
     // Register dump

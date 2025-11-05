@@ -18,21 +18,29 @@
 #define CONTROL_PILOT_INPUT PC1
 #define CONTROL_PILOT_OUTPUT PC7
 
+// SPI1
 #define BCC0_TX_SCK PA5
 #define BCC0_TX_CS PA6
 #define BCC0_TX_DATA PA7
+
+// SPI2
 #define BCC0_RX_SCK PA9
 #define BCC0_RX_CS PB9
 #define BCC0_RX_DATA PA10
+
 #define BCC0_ENABLE PE8
 #define BCC0_INTB PE9
 
+// SPI4
 #define BCC1_TX_SCK PE2
 #define BCC1_TX_CS PE4
 #define BCC1_TX_DATA PE6
+
+// SPI3
 #define BCC1_RX_SCK PB3_ALT1   // Force SPI3 instead of SPI1
 #define BCC1_RX_CS PA4_ALT1    // SPI3_NSS (PA4 defaults to SPI1, need ALT1 for SPI3)
 #define BCC1_RX_DATA PB5_ALT1
+
 #define BCC1_ENABLE PE10
 #define BCC1_INTB PE11
 
