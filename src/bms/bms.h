@@ -5,10 +5,17 @@
 #include "SPI.h"
 #include "hal/dma_config.h"
 #include <Adafruit_NeoPixel.h>
+#include <HardwareTimer.h>
 #include "evse/evse.h"
 #include "pcs/pcs.h"
 #include "can.h"
 #include "ivt-s/ivt_shunt.h"
+
+// Contactor PWM settings
+#define CONTACTOR_PWM_FREQ 25000     // 25kHz PWM frequency (above audible range)
+#define CONTACTOR_ENGAGE_DUTY 100    // 100% duty cycle to engage (pull-in)
+#define CONTACTOR_HOLD_DUTY 30       // 30% duty cycle to hold (economizer)
+#define CONTACTOR_ENGAGE_TIME_MS 100 // Hold at 100% for 100ms before dropping to hold duty
 
 // HV System States
 enum HV_State : uint8_t {
@@ -118,6 +125,13 @@ class BatteryManagementSystem {
 
   bool contactor_fault;
   bool bcc1_enabled;
+
+  // PWM control for contactors (economizer mode)
+  HardwareTimer *positive_contactor_timer;
+  uint32_t positive_contactor_channel;
+  HardwareTimer *negative_contactor_timer;
+  uint32_t negative_contactor_channel;
+  bool contactors_use_pwm;
 
   // EVSE Controller
   EVSEController *evse;

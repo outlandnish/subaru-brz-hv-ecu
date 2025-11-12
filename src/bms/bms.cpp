@@ -79,6 +79,11 @@ BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *co
   hv_config.precharge_voltage_margin_v = 10.0f;  // 10V margin for precharge completion
   hv_config.precharge_timeout_ms = 5000;         // 5 second timeout
   hv_config.precharge_check_interval_ms = 100;   // Check every 100ms
+
+  // Initialize PWM contactor control
+  positive_contactor_timer = nullptr;
+  negative_contactor_timer = nullptr;
+  contactors_use_pwm = false;
 }
 
 bool BatteryManagementSystem::initialize(uint16_t device_configuration[][BCC_INIT_CONF_REG_CNT]) {
@@ -102,15 +107,47 @@ void BatteryManagementSystem::set_contactor_pins(uint8_t contactor1_pin, uint8_t
   contactor_enable_pin = nsleep_pin;        // nSLEEP
   contactor_fault_pin = fault_pin;
 
-  pinMode(positive_contactor_pin, OUTPUT);     // IN1 pin
-  pinMode(negative_contactor_pin, OUTPUT);     // IN2 pin
   pinMode(contactor_enable_pin, OUTPUT);       // nSLEEP pin
   pinMode(contactor_fault_pin, INPUT_PULLUP);  // nFAULT pin (active LOW)
 
   // Initialize DRV8874 to disabled state
   digitalWrite(contactor_enable_pin, HIGH);    // nSLEEP HIGH to wake device
-  digitalWrite(positive_contactor_pin, LOW);   // IN1 = LOW (OUT1 disabled)
-  digitalWrite(negative_contactor_pin, LOW);   // IN2 = LOW (OUT2 disabled)
+
+  // Initialize PWM for both contactors
+  PinName pos_pin = digitalPinToPinName(positive_contactor_pin);
+  TIM_TypeDef *pos_instance = (TIM_TypeDef *)pinmap_peripheral(pos_pin, PinMap_PWM);
+
+  PinName neg_pin = digitalPinToPinName(negative_contactor_pin);
+  TIM_TypeDef *neg_instance = (TIM_TypeDef *)pinmap_peripheral(neg_pin, PinMap_PWM);
+
+  if (pos_instance != nullptr && neg_instance != nullptr) {
+    // Setup positive contactor PWM
+    positive_contactor_channel = STM_PIN_CHANNEL(pinmap_function(pos_pin, PinMap_PWM));
+    positive_contactor_timer = new HardwareTimer(pos_instance);
+    positive_contactor_timer->setMode(positive_contactor_channel, TIMER_OUTPUT_COMPARE_PWM1, positive_contactor_pin);
+    positive_contactor_timer->setOverflow(CONTACTOR_PWM_FREQ, HERTZ_FORMAT);
+    positive_contactor_timer->setCaptureCompare(positive_contactor_channel, 0, PERCENT_COMPARE_FORMAT);
+    positive_contactor_timer->pause();
+
+    // Setup negative contactor PWM
+    negative_contactor_channel = STM_PIN_CHANNEL(pinmap_function(neg_pin, PinMap_PWM));
+    negative_contactor_timer = new HardwareTimer(neg_instance);
+    negative_contactor_timer->setMode(negative_contactor_channel, TIMER_OUTPUT_COMPARE_PWM1, negative_contactor_pin);
+    negative_contactor_timer->setOverflow(CONTACTOR_PWM_FREQ, HERTZ_FORMAT);
+    negative_contactor_timer->setCaptureCompare(negative_contactor_channel, 0, PERCENT_COMPARE_FORMAT);
+    negative_contactor_timer->pause();
+
+    contactors_use_pwm = true;
+    Serial.println("BMS: Contactor PWM economizer enabled");
+  } else {
+    // Fall back to digital control
+    pinMode(positive_contactor_pin, OUTPUT);
+    pinMode(negative_contactor_pin, OUTPUT);
+    digitalWrite(positive_contactor_pin, LOW);
+    digitalWrite(negative_contactor_pin, LOW);
+    contactors_use_pwm = false;
+    Serial.println("BMS: Using digital contactor control (PWM not available)");
+  }
 }
 
 void BatteryManagementSystem::set_status_leds(Adafruit_NeoPixel *leds) {
@@ -848,14 +885,49 @@ void BatteryManagementSystem::control_contactors(bool enable_contactor1, bool en
   // DRV8874 in independent half-bridge mode with two separate contactors
   // IN1 controls OUT1 for contactor 1, IN2 controls OUT2 for contactor 2
   if (contactor_fault) {
-    digitalWrite(positive_contactor_pin, LOW);   // IN1 = LOW (disabled)
-    digitalWrite(negative_contactor_pin, LOW);   // IN2 = LOW (disabled)
+    if (contactors_use_pwm) {
+      positive_contactor_timer->pause();
+      negative_contactor_timer->pause();
+    } else {
+      digitalWrite(positive_contactor_pin, LOW);
+      digitalWrite(negative_contactor_pin, LOW);
+    }
     return;
   }
 
-  // Independently control each contactor
-  digitalWrite(positive_contactor_pin, enable_contactor1 ? HIGH : LOW);  // IN1 controls contactor 1
-  digitalWrite(negative_contactor_pin, enable_contactor2 ? HIGH : LOW);  // IN2 controls contactor 2
+  if (contactors_use_pwm) {
+    // PWM economizer mode for both contactors
+
+    // Contactor 1
+    if (enable_contactor1) {
+      // Engage with 100% duty
+      positive_contactor_timer->setCaptureCompare(positive_contactor_channel, CONTACTOR_ENGAGE_DUTY, PERCENT_COMPARE_FORMAT);
+      positive_contactor_timer->resume();
+      delay(CONTACTOR_ENGAGE_TIME_MS);
+      // Drop to hold duty
+      positive_contactor_timer->setCaptureCompare(positive_contactor_channel, CONTACTOR_HOLD_DUTY, PERCENT_COMPARE_FORMAT);
+    } else {
+      positive_contactor_timer->pause();
+      positive_contactor_timer->setCaptureCompare(positive_contactor_channel, 0, PERCENT_COMPARE_FORMAT);
+    }
+
+    // Contactor 2
+    if (enable_contactor2) {
+      // Engage with 100% duty
+      negative_contactor_timer->setCaptureCompare(negative_contactor_channel, CONTACTOR_ENGAGE_DUTY, PERCENT_COMPARE_FORMAT);
+      negative_contactor_timer->resume();
+      delay(CONTACTOR_ENGAGE_TIME_MS);
+      // Drop to hold duty
+      negative_contactor_timer->setCaptureCompare(negative_contactor_channel, CONTACTOR_HOLD_DUTY, PERCENT_COMPARE_FORMAT);
+    } else {
+      negative_contactor_timer->pause();
+      negative_contactor_timer->setCaptureCompare(negative_contactor_channel, 0, PERCENT_COMPARE_FORMAT);
+    }
+  } else {
+    // Digital control fallback
+    digitalWrite(positive_contactor_pin, enable_contactor1 ? HIGH : LOW);
+    digitalWrite(negative_contactor_pin, enable_contactor2 ? HIGH : LOW);
+  }
 }
 
 void BatteryManagementSystem::start_charging() {
