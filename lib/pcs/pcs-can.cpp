@@ -96,19 +96,37 @@ void PCSCan::process_messages() {
   while (can_bus->receiveMessage(can_id, data, len)) {
     uint32_t data_words[2];
     memcpy(data_words, data, 8);
+    process_frame(can_id, data_words);
+  }
+}
 
-    switch (can_id) {
-      case 0x204: handle204(data_words); break;
-      case 0x224: handle224(data_words); break;
-      case 0x264: handle264(data_words); break;
-      case 0x2A4: handle2A4(data_words); break;
-      case 0x2C4: handle2C4(data_words); break;
-      case 0x3A4: handle3A4(data_words); break;
-      case 0x424: handle424(data_words); break;
-      case 0x504: handle504(data_words); break;
-      case 0x76C: handle76C(data_words); break;
-      default: break;
+void PCSCan::process_messages_from_queue(QueueHandle_t queue) {
+  if (queue == nullptr) return;
+
+  CAN_FRAME frame;
+  // Process all pending messages (non-blocking)
+  while (xQueueReceive(queue, &frame, 0) == pdTRUE) {
+    // Check if message is for PCS (0x204-0x504 range)
+    if (frame.id >= 0x204 && frame.id <= 0x76C) {
+      uint32_t data_words[2];
+      memcpy(data_words, frame.data.uint8, 8);
+      process_frame(frame.id, data_words);
     }
+  }
+}
+
+void PCSCan::process_frame(uint32_t can_id, uint32_t data[2]) {
+  switch (can_id) {
+    case 0x204: handle204(data); break;
+    case 0x224: handle224(data); break;
+    case 0x264: handle264(data); break;
+    case 0x2A4: handle2A4(data); break;
+    case 0x2C4: handle2C4(data); break;
+    case 0x3A4: handle3A4(data); break;
+    case 0x424: handle424(data); break;
+    case 0x504: handle504(data); break;
+    case 0x76C: handle76C(data); break;
+    default: break;
   }
 }
 

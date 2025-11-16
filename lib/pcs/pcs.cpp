@@ -77,8 +77,9 @@ void PCSController::update() {
   // Process any pending commands from the queue
   process_command_queue();
 
-  // Process incoming CAN messages
-  PCSCan::process_messages();
+  // Process incoming CAN messages from queue
+  extern QueueHandle_t ipc_can_queue;
+  PCSCan::process_messages_from_queue(ipc_can_queue);
 
   // Run state machine at 100ms intervals (10Hz)
   if (now - last_100ms_update >= 100) {

@@ -9,6 +9,7 @@
  */
 
 #include <Arduino.h>
+#include <STM32FreeRTOS.h>
 #include "can.h"
 
 // PCS operational modes (for message 0x22A byte 2)
@@ -98,8 +99,14 @@ public:
   // Initialize the PCS CAN interface
   static void begin(CANBus *ipc_can_bus);
 
-  // Process incoming CAN messages
+  // Process incoming CAN messages (legacy - polls CAN bus directly)
   static void process_messages();
+
+  // Process messages from FreeRTOS queue
+  static void process_messages_from_queue(QueueHandle_t queue);
+
+  // Process a single CAN frame (for queue-based processing)
+  static void process_frame(uint32_t can_id, uint32_t data[2]);
 
   // CAN message transmission methods (called periodically)
   static void Msg13D();   // AC current limit message
