@@ -7,8 +7,9 @@
 #include "hal/dma_config.h"
 #include "hal/hv-ecu-v0-pins.h"
 #include "can.h"
-#include "uds/uds.h"
 #include "taycan.h"
+#include "params.h"
+#include "param_save.h"
 
 #define Serial SerialUSB
 

@@ -39,19 +39,25 @@ BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *co
   bcc1_initialized = false;
   stack_voltage_uv = 0;
   stack_voltage_filtered_uv = 0;
-  voltage_filter_alpha = 0.2f;  // Default: 0.2 @ 50 Hz = smooth filtering with good responsiveness
+  voltage_filter_alpha = Param::GetFloat(Param::voltageFilterAlpha);
   status_leds = nullptr;
   led_animation_step = 0;
   last_successful_measurement = 0;
-  communication_timeout_ms = 5000; // 5 second timeout
+  communication_timeout_ms = Param::GetInt(Param::commTimeout);
   communication_lost = false;
 
-  // Initialize EVSE and IVT pointers
-  evse = nullptr;
+  // Initialize IVT and CHAdeMO pointers
   ivt_shunt = nullptr;
+  chademo = nullptr;
   ipc_can = nullptr;
   m3_can = nullptr;
   hv_can = nullptr;
+
+  // Initialize SOC tracking
+  current_soc_percent = Param::GetFloat(Param::initSocPercent);
+  accumulated_charge_ah = 0.0f;
+  last_soc_update_time = 0;
+  soc_initialized = false;
 
   // Initialize cell voltage and balancing arrays
   memset(cell_voltages_uv, 0, sizeof(cell_voltages_uv));
@@ -66,19 +72,23 @@ BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *co
   has_cb_open_fault = false;
   has_cb_short_fault = false;
   last_fault_check = 0;
-  fault_check_interval_ms = 5000; // Check faults every 5 seconds
+  fault_check_interval_ms = Param::GetInt(Param::faultCheckInt);
 
-  // Set default charging config
-  charging_config.target_cell_voltage = 3.6f;
-  charging_config.balance_threshold_mv = 50.0f;
-  charging_config.balance_target_mv = 10.0f;
-  charging_config.balancing_timer_min = 5;
-  charging_config.measurement_interval_ms = 20;  // 20ms = 50 Hz measurement rate
+  // Load charging config from parameters
+  charging_config.target_cell_voltage = Param::GetFloat(Param::targetCellVolt);
+  charging_config.balance_threshold_mv = Param::GetFloat(Param::balanceThreshold);
+  charging_config.balance_target_mv = Param::GetFloat(Param::balanceTarget);
+  charging_config.balancing_timer_min = Param::GetInt(Param::balanceTimerMin);
+  charging_config.measurement_interval_ms = Param::GetInt(Param::measureInterval);
+  charging_config.battery_capacity_ah = Param::GetFloat(Param::batteryCapacity);
+  charging_config.max_charge_current_a = Param::GetFloat(Param::maxChargeCurrent);
+  charging_config.min_soc_percent = Param::GetFloat(Param::minSocPercent);
+  charging_config.max_soc_percent = Param::GetFloat(Param::maxSocPercent);
 
-  // Set default HV connection config
-  hv_config.precharge_voltage_margin_v = 10.0f;  // 10V margin for precharge completion
-  hv_config.precharge_timeout_ms = 5000;         // 5 second timeout
-  hv_config.precharge_check_interval_ms = 100;   // Check every 100ms
+  // Load HV connection config from parameters
+  hv_config.precharge_voltage_margin_v = Param::GetFloat(Param::prechargeMargin);
+  hv_config.precharge_timeout_ms = Param::GetInt(Param::prechargeTimeout);
+  hv_config.precharge_check_interval_ms = Param::GetInt(Param::prechargeCheckInt);
 
   // Initialize PWM contactor control
   positive_contactor_timer = nullptr;
@@ -125,7 +135,7 @@ void BatteryManagementSystem::set_contactor_pins(uint8_t contactor1_pin, uint8_t
     positive_contactor_channel = STM_PIN_CHANNEL(pinmap_function(pos_pin, PinMap_PWM));
     positive_contactor_timer = new HardwareTimer(pos_instance);
     positive_contactor_timer->setMode(positive_contactor_channel, TIMER_OUTPUT_COMPARE_PWM1, positive_contactor_pin);
-    positive_contactor_timer->setOverflow(CONTACTOR_PWM_FREQ, HERTZ_FORMAT);
+    positive_contactor_timer->setOverflow(Param::GetInt(Param::pwmFrequency), HERTZ_FORMAT);
     positive_contactor_timer->setCaptureCompare(positive_contactor_channel, 0, PERCENT_COMPARE_FORMAT);
     positive_contactor_timer->pause();
 
@@ -133,7 +143,7 @@ void BatteryManagementSystem::set_contactor_pins(uint8_t contactor1_pin, uint8_t
     negative_contactor_channel = STM_PIN_CHANNEL(pinmap_function(neg_pin, PinMap_PWM));
     negative_contactor_timer = new HardwareTimer(neg_instance);
     negative_contactor_timer->setMode(negative_contactor_channel, TIMER_OUTPUT_COMPARE_PWM1, negative_contactor_pin);
-    negative_contactor_timer->setOverflow(CONTACTOR_PWM_FREQ, HERTZ_FORMAT);
+    negative_contactor_timer->setOverflow(Param::GetInt(Param::pwmFrequency), HERTZ_FORMAT);
     negative_contactor_timer->setCaptureCompare(negative_contactor_channel, 0, PERCENT_COMPARE_FORMAT);
     negative_contactor_timer->pause();
 
@@ -162,13 +172,12 @@ void BatteryManagementSystem::set_status_leds(Adafruit_NeoPixel *leds) {
   }
 }
 
-void BatteryManagementSystem::set_evse(EVSEController *evse_controller) {
-  evse = evse_controller;
-}
-
-
 void BatteryManagementSystem::set_ivt_shunt(IVTShunt *shunt) {
   ivt_shunt = shunt;
+}
+
+void BatteryManagementSystem::set_chademo(CHAdeMOController *chademo_controller) {
+  chademo = chademo_controller;
 }
 
 void BatteryManagementSystem::set_can_buses(CANBus *ipc_can_bus, CANBus *m3_can_bus, CANBus *hv_can_bus) {
@@ -277,9 +286,35 @@ void BatteryManagementSystem::master_task_loop() {
   Serial.println("BMS Master Task: Hardware initialized, starting state machine");
 
   while (true) {
-    // Update EVSE status if configured
-    if (evse != nullptr) {
-      evse->update();
+    // Update SOC using coulomb counting from IVT
+    update_soc();
+
+    // Update CHAdeMO controller if configured
+    if (chademo != nullptr) {
+      chademo->update();
+
+      // Update CHAdeMO with current battery status
+      uint8_t soc = get_soc();  // Get actual SOC from coulomb counting
+      uint16_t current_voltage = stack_voltage_filtered_uv / 1000000;  // Convert uV to V
+      uint16_t requested_current = calculate_safe_charge_current();  // Calculate based on cell conditions
+
+      chademo->update_battery_status(current_voltage, soc, requested_current);
+
+      // Monitor CHAdeMO state and handle transitions
+      if (chademo->is_charging() && current_state == BMS_Charging) {
+        // Active charging - update current request dynamically
+        uint16_t new_current = calculate_safe_charge_current();
+        if (new_current == 0 || has_reached_target_voltage(cell_voltages_filtered_uv, bcc0_config->cell_count)) {
+          // Stop charging if current reaches 0 or target voltage reached
+          Serial.println("BMS: Charge complete or current limit reached");
+          stop_chademo_charging();
+        }
+      } else if (chademo->has_timeout()) {
+        // CHAdeMO timeout - stop charging
+        Serial.println("BMS: CHAdeMO timeout detected");
+        stop_charging();
+        current_state = BMS_Error;
+      }
     }
 
     // Update HV state machine
@@ -300,41 +335,15 @@ void BatteryManagementSystem::master_task_loop() {
     switch (current_state) {
       case BMS_Idle:
         // Wait for user to start charging via console
-        // Check if EVSE is connected and ready
-        if (evse != nullptr && evse->is_ready_to_charge()) {
-          uint16_t available_current = evse->get_max_charge_current_ma();
-          Serial.printf("BMS: EVSE ready - %d mA available\r\n", available_current);
-        }
         break;
 
       case BMS_Charging: {
-        // Check if EVSE is still connected (if configured)
-        if (evse != nullptr && !evse->is_ready_to_charge()) {
-          Serial.println("BMS: EVSE disconnected - stopping charge");
-          hv_disconnect();  // This will disable contactors and stop PCS
-          current_state = BMS_Idle;
-          break;
-        }
-
         // Use filtered voltages for decision making to avoid noise-induced state changes
         if (has_reached_target_voltage(cell_voltages_filtered_uv, bcc0_config->cell_count)) {
           Serial.println("BMS: Target voltage reached!");
-          hv_disconnect();  // This will disable contactors and stop PCS
+          hv_disconnect();
           current_state = BMS_Idle;
           break;
-        }
-
-        // Update PCS with current battery voltage and power request
-        // Set target voltage slightly above current voltage for CV charging
-        uint32_t target_v_mv = (uint32_t)(charging_config.target_cell_voltage * bcc0_config->cell_count * 1000.0f);
-        PCSController::set_hv_voltage_async(target_v_mv / 1000);  // Convert mV to V
-
-        // Calculate charge power based on available current from EVSE
-        if (evse != nullptr) {
-          uint16_t available_current_ma = evse->get_max_charge_current_ma();
-          uint16_t stack_voltage_v = stack_voltage_filtered_uv / 1000000;
-          uint16_t charge_power_w = (available_current_ma * stack_voltage_v) / 1000;  // P = I * V
-          PCSController::set_charge_power_async(charge_power_w);
         }
 
         // Check cell voltage difference using filtered values
@@ -343,7 +352,7 @@ void BatteryManagementSystem::master_task_loop() {
         if (max_diff_mv > charging_config.balance_threshold_mv) {
           Serial.printf("BMS: Cell imbalance detected: %.2f mV (threshold: %.2f mV)\r\n",
                        max_diff_mv, charging_config.balance_threshold_mv);
-          hv_disconnect();  // This will disable contactors and stop PCS
+          hv_disconnect();
           current_state = BMS_CellBalancing;
 
           // Calculate which cells need balancing using filtered voltages
@@ -381,6 +390,9 @@ void BatteryManagementSystem::master_task_loop() {
 
     // Update LED status
     update_status_leds();
+
+    // Update libopeninv spot values (read-only parameters)
+    update_spot_values();
 
     vTaskDelay(pdMS_TO_TICKS(charging_config.measurement_interval_ms));
   }
@@ -646,7 +658,7 @@ void BatteryManagementSystem::stop_cell_balancing(BatteryCellController *bcc, ui
   bcc->enable_cell_balancing(BCC_CID_DEV1, false);
 }
 
-float BatteryManagementSystem::get_max_cell_voltage_diff_mv(uint32_t *cell_voltages, uint8_t cell_count) {
+float BatteryManagementSystem::get_max_cell_voltage_diff_mv(const uint32_t *cell_voltages, uint8_t cell_count) const {
   if (cell_count == 0) return 0.0f;
 
   uint32_t min_voltage = cell_voltages[0];
@@ -699,31 +711,12 @@ void BatteryManagementSystem::hv_connect(HV_Mode mode) {
   digitalWrite(contactor_enable_pin, HIGH);      // nSLEEP = HIGH (device awake)
   digitalWrite(negative_contactor_pin, HIGH);    // IN2 = HIGH (OUT2 energizes negative contactor)
   digitalWrite(positive_contactor_pin, LOW);     // IN1 = LOW (precharge active, positive contactor open)
-
-  // Step 2: Start PCS initialization sequence based on mode
-  bool pcs_started = false;
-  if (mode == HV_MODE_CHARGING) {
-    pcs_started = PCSController::start_charging_async();
-    Serial.println("BMS: Step 2 - PCS charging initialization started");
-  } else {
-    pcs_started = PCSController::start_drive_mode_async();
-    Serial.println("BMS: Step 2 - PCS drive mode initialization started");
-  }
-
-  if (!pcs_started) {
-    Serial.println("BMS: ERROR - Failed to start PCS initialization");
-    hv_disconnect();
-    hv_state = HV_Fault;
-  }
 }
 
 void BatteryManagementSystem::hv_disconnect() {
   Serial.println("BMS: Disconnecting HV system");
   hv_state = HV_Shutdown;
   hv_state_entry_time = millis();
-
-  // Stop PCS gracefully
-  PCSController::stop_async();
 
   // Open both contactors immediately
   digitalWrite(positive_contactor_pin, LOW);   // IN1 = LOW (OUT1 disabled)
@@ -776,19 +769,17 @@ void BatteryManagementSystem::update_hv_state() {
       uint32_t precharge_time = current_time - precharge_start_time;
       if (precharge_time > hv_config.precharge_timeout_ms) {
         Serial.println("BMS: Precharge timeout!");
-        PCSController::stop_async();  // Stop PCS on timeout
         hv_disconnect();
         hv_state = HV_Fault;
         break;
       }
 
-      // Check if both PCS and voltage precharge are complete
+      // Check if voltage precharge is complete
       if (time_in_state >= hv_config.precharge_check_interval_ms) {
-        bool pcs_ready = PCSController::is_precharge_complete();
         bool voltage_ready = is_precharge_complete();
 
-        if (pcs_ready && voltage_ready) {
-          Serial.println("BMS: Precharge complete (PCS ready + voltage matched)");
+        if (voltage_ready) {
+          Serial.println("BMS: Precharge complete (voltage matched)");
           Serial.println("BMS: Step 3 - Closing positive contactor");
           // Step 3: Close positive contactor (IN1/OUT1)
           digitalWrite(positive_contactor_pin, HIGH);  // IN1 = HIGH (OUT1 energizes positive contactor)
@@ -798,13 +789,7 @@ void BatteryManagementSystem::update_hv_state() {
           hv_state = HV_Active;
           hv_state_entry_time = current_time;
         } else {
-          // Log status for debugging
-          if (!pcs_ready) {
-            Serial.printf("BMS: Waiting for PCS (state=%d)\r\n", PCSController::get_state());
-          }
-          if (!voltage_ready) {
-            // Voltage status already printed by is_precharge_complete()
-          }
+          // Voltage status already printed by is_precharge_complete()
           // Update check timestamp
           hv_state_entry_time = current_time;
         }
@@ -897,15 +882,18 @@ void BatteryManagementSystem::control_contactors(bool enable_contactor1, bool en
 
   if (contactors_use_pwm) {
     // PWM economizer mode for both contactors
+    uint8_t engage_duty = Param::GetInt(Param::engageDuty);
+    uint8_t hold_duty = Param::GetInt(Param::holdDuty);
+    uint16_t engage_time_ms = Param::GetInt(Param::engageTime);
 
     // Contactor 1
     if (enable_contactor1) {
-      // Engage with 100% duty
-      positive_contactor_timer->setCaptureCompare(positive_contactor_channel, CONTACTOR_ENGAGE_DUTY, PERCENT_COMPARE_FORMAT);
+      // Engage with configured duty
+      positive_contactor_timer->setCaptureCompare(positive_contactor_channel, engage_duty, PERCENT_COMPARE_FORMAT);
       positive_contactor_timer->resume();
-      delay(CONTACTOR_ENGAGE_TIME_MS);
+      delay(engage_time_ms);
       // Drop to hold duty
-      positive_contactor_timer->setCaptureCompare(positive_contactor_channel, CONTACTOR_HOLD_DUTY, PERCENT_COMPARE_FORMAT);
+      positive_contactor_timer->setCaptureCompare(positive_contactor_channel, hold_duty, PERCENT_COMPARE_FORMAT);
     } else {
       positive_contactor_timer->pause();
       positive_contactor_timer->setCaptureCompare(positive_contactor_channel, 0, PERCENT_COMPARE_FORMAT);
@@ -913,12 +901,12 @@ void BatteryManagementSystem::control_contactors(bool enable_contactor1, bool en
 
     // Contactor 2
     if (enable_contactor2) {
-      // Engage with 100% duty
-      negative_contactor_timer->setCaptureCompare(negative_contactor_channel, CONTACTOR_ENGAGE_DUTY, PERCENT_COMPARE_FORMAT);
+      // Engage with configured duty
+      negative_contactor_timer->setCaptureCompare(negative_contactor_channel, engage_duty, PERCENT_COMPARE_FORMAT);
       negative_contactor_timer->resume();
-      delay(CONTACTOR_ENGAGE_TIME_MS);
+      delay(engage_time_ms);
       // Drop to hold duty
-      negative_contactor_timer->setCaptureCompare(negative_contactor_channel, CONTACTOR_HOLD_DUTY, PERCENT_COMPARE_FORMAT);
+      negative_contactor_timer->setCaptureCompare(negative_contactor_channel, hold_duty, PERCENT_COMPARE_FORMAT);
     } else {
       negative_contactor_timer->pause();
       negative_contactor_timer->setCaptureCompare(negative_contactor_channel, 0, PERCENT_COMPARE_FORMAT);
@@ -936,24 +924,10 @@ void BatteryManagementSystem::start_charging() {
     return;
   }
 
-  // Check if EVSE is ready (if configured)
-  if (evse != nullptr && !evse->is_ready_to_charge()) {
-    Serial.println("BMS: Cannot start charging - EVSE not ready");
-    return;
-  }
-
   if (current_state == BMS_Idle) {
     Serial.println("BMS: Starting charging cycle");
 
-    // Signal EVSE we're ready to charge
-    if (evse != nullptr) {
-      evse->set_ready_to_charge(true);
-    }
-
-    // Set initial target voltage for PCS
-    PCSController::set_hv_voltage_async(get_target_stack_voltage());
-
-    // Start HV connection with PCS in charging mode
+    // Start HV connection in charging mode
     hv_connect(HV_MODE_CHARGING);
     current_state = BMS_Charging;
   } else {
@@ -969,12 +943,9 @@ void BatteryManagementSystem::start_drive_mode() {
   }
 
   if (current_state == BMS_Idle) {
-    Serial.println("BMS: Starting drive mode (DCDC only)");
+    Serial.println("BMS: Starting drive mode");
 
-    // Set DCDC voltage target
-    PCSController::set_dcdc_voltage_async(13.8f);  // Standard 12V system voltage
-
-    // Start HV connection with PCS in drive mode
+    // Start HV connection in drive mode
     hv_connect(HV_MODE_DRIVE);
     // Note: BMS state stays Idle since we're not charging
   } else {
@@ -986,12 +957,7 @@ void BatteryManagementSystem::start_drive_mode() {
 void BatteryManagementSystem::stop_charging() {
   Serial.println("BMS: User requested charging stop");
 
-  // Signal EVSE we're not ready
-  if (evse != nullptr) {
-    evse->set_ready_to_charge(false);
-  }
-
-  // Stop HV system (which will stop PCS gracefully)
+  // Stop HV system
   hv_disconnect();
 
   stop_cell_balancing(bcc0, bcc0_config->cell_count);
@@ -1383,119 +1349,6 @@ void BatteryManagementSystem::set_state_leds(uint32_t color) {
   }
 }
 
-void BatteryManagementSystem::update_pcs_led() {
-  if (!status_leds) return;
-
-  // LED 4: PCS (Power Conversion System) status
-
-  PCSState pcs_state = PCSController::get_state();
-  bool charging = PCSController::is_charge_enabled();
-  bool dcdc_active = PCSController::is_dcdc_enabled();
-  uint8_t r = 0, g = 0, b = 0;
-  uint8_t brightness;
-
-  switch (pcs_state) {
-    case PCS_STATE_INIT:
-      // Purple - initializing
-      set_led_color(4, color_rgb(128, 0, 128));
-      break;
-
-    case PCS_STATE_OFF:
-      // Dim blue - off/standby
-      set_led_color(4, color_rgb(0, 0, 64));
-      break;
-
-    case PCS_STATE_WAITSTART:
-    case PCS_STATE_PRECHARGE:
-      // Cyan - precharging
-      set_led_color(4, color_rgb(0, 128, 128));
-      break;
-
-    case PCS_STATE_ACTIVATE:
-    case PCS_STATE_CHARGING:
-      // Pulsing green - charging active
-      led_animation_step = (led_animation_step + 1) % 100;
-      g = (led_animation_step < 50) ? (led_animation_step * 5) : ((100 - led_animation_step) * 5);
-      set_led_color(4, color_rgb(0, g, 0));
-      break;
-
-    case PCS_STATE_DRIVE:
-      // Pulsing blue - DCDC active (drive mode)
-      led_animation_step = (led_animation_step + 1) % 100;
-      b = (led_animation_step < 50) ? (led_animation_step * 5) : ((100 - led_animation_step) * 5);
-      set_led_color(4, color_rgb(0, 0, b));
-      break;
-
-    case PCS_STATE_STOP:
-      // Yellow - shutting down
-      set_led_color(4, color_rgb(128, 128, 0));
-      break;
-
-    case PCS_STATE_FAULT:
-      // Flashing red - PCS fault
-      led_animation_step = (led_animation_step + 1) % 60;
-      if (led_animation_step < 30) {
-        set_led_color(4, color_rgb(255, 0, 0));  // Bright red
-      } else {
-        set_led_color(4, color_rgb(0, 0, 0));    // Off
-      }
-      break;
-
-    default:
-      set_led_color(4, color_rgb(0, 0, 0));
-      break;
-  }
-}
-
-void BatteryManagementSystem::update_evse_led() {
-  if (!status_leds || !evse) return;
-
-  // LED 3: EVSE proximity and control pilot status
-  EVSEState state = evse->get_state();
-  EVSECableLimit cable_limit = evse->get_cable_limit();
-
-  switch (state) {
-    case EVSE_STATE_A:
-      // No vehicle connected - Off
-      set_led_color(3, color_rgb(0, 0, 0));
-      break;
-
-    case EVSE_STATE_B:
-      // Vehicle connected, not ready - Cyan (blue-green)
-      set_led_color(3, color_rgb(0, 128, 128));
-      break;
-
-    case EVSE_STATE_C:
-      // Vehicle ready to charge / charging - Green
-      set_led_color(3, color_rgb(0, 255, 0));
-      break;
-
-    case EVSE_STATE_D:
-      // Vehicle with ventilation required - Magenta
-      set_led_color(3, color_rgb(255, 0, 255));
-      break;
-
-    case EVSE_STATE_E:
-      // No power / fault - Red flashing
-      led_animation_step = (led_animation_step + 1) % 60;
-      if (led_animation_step < 30) {
-        set_led_color(3, color_rgb(255, 0, 0));
-      } else {
-        set_led_color(3, color_rgb(0, 0, 0));
-      }
-      break;
-
-    case EVSE_FAULT:
-      // Fault - Red solid
-      set_led_color(3, color_rgb(255, 0, 0));
-      break;
-
-    default:
-      set_led_color(3, color_rgb(0, 0, 0));
-      break;
-  }
-}
-
 void BatteryManagementSystem::update_hv_led() {
   if (!status_leds) return;
   uint8_t brightness;
@@ -1626,13 +1479,229 @@ void BatteryManagementSystem::update_status_leds() {
   // Update HV state LED (2)
   update_hv_led();
 
-  // Update EVSE LED (3)
-  update_evse_led();
-
-  // Update PCS LED (4)
-  update_pcs_led();
-
   status_leds->show();
+}
+
+// SOC Tracking Implementation
+void BatteryManagementSystem::initialize_soc_from_voltage() {
+  if (soc_initialized) return;
+
+  // Estimate SOC from average cell voltage (rough approximation)
+  // For NMC/NCA chemistry: ~3.0V = 0%, ~3.7V = 50%, ~4.2V = 100%
+  // Note: This is a simplified linear approximation. Real NMC discharge curves are non-linear.
+
+  uint8_t cell_count = bcc0_config->cell_count;
+  if (cell_count == 0) return;
+
+  uint32_t total_voltage = 0;
+  for (uint8_t i = 0; i < cell_count; i++) {
+    total_voltage += cell_voltages_filtered_uv[i];
+  }
+  float avg_cell_voltage = total_voltage / (float)cell_count / 1000000.0f;  // Convert to volts
+
+  // NMC voltage mapping: socMinVoltage = 0%, target voltage = 100%
+  float min_voltage = Param::GetFloat(Param::socMinVoltage);
+  float max_voltage = charging_config.target_cell_voltage;
+
+  current_soc_percent = ((avg_cell_voltage - min_voltage) / (max_voltage - min_voltage)) * 100.0f;
+
+  // Clamp to valid range
+  if (current_soc_percent < 0.0f) current_soc_percent = 0.0f;
+  if (current_soc_percent > 100.0f) current_soc_percent = 100.0f;
+
+  soc_initialized = true;
+  last_soc_update_time = millis();
+
+  Serial.printf("BMS: SOC initialized from voltage: %.1f%% (avg cell: %.3fV, NMC chemistry)\r\n",
+                current_soc_percent, avg_cell_voltage);
+}
+
+void BatteryManagementSystem::update_soc() {
+  if (!ivt_shunt || !ivt_shunt->is_alive()) {
+    // No current measurement available, can't update SOC
+    return;
+  }
+
+  // Initialize SOC from voltage if not done yet
+  if (!soc_initialized) {
+    initialize_soc_from_voltage();
+    return;
+  }
+
+  uint32_t current_time = millis();
+  if (last_soc_update_time == 0) {
+    last_soc_update_time = current_time;
+    return;
+  }
+
+  // Calculate time delta in hours
+  float delta_time_ms = current_time - last_soc_update_time;
+  float delta_time_hours = delta_time_ms / 3600000.0f;  // Convert ms to hours
+
+  // Get current from IVT (positive = charging, negative = discharging)
+  float current_a = ivt_shunt->get_current();
+
+  // Integrate current to get charge in Ah
+  float charge_delta_ah = current_a * delta_time_hours;
+  accumulated_charge_ah += charge_delta_ah;
+
+  // Update SOC based on accumulated charge
+  float soc_delta = (charge_delta_ah / charging_config.battery_capacity_ah) * 100.0f;
+  current_soc_percent += soc_delta;
+
+  // Clamp SOC to valid range
+  if (current_soc_percent < charging_config.min_soc_percent) {
+    current_soc_percent = charging_config.min_soc_percent;
+  }
+  if (current_soc_percent > charging_config.max_soc_percent) {
+    current_soc_percent = charging_config.max_soc_percent;
+  }
+
+  last_soc_update_time = current_time;
+}
+
+void BatteryManagementSystem::set_soc(float soc_percent) {
+  current_soc_percent = soc_percent;
+
+  // Clamp to valid range
+  if (current_soc_percent < 0.0f) current_soc_percent = 0.0f;
+  if (current_soc_percent > 100.0f) current_soc_percent = 100.0f;
+
+  soc_initialized = true;
+  last_soc_update_time = millis();
+  accumulated_charge_ah = 0.0f;  // Reset accumulator
+
+  Serial.printf("BMS: SOC manually set to %.1f%%\r\n", current_soc_percent);
+}
+
+uint16_t BatteryManagementSystem::calculate_safe_charge_current() const {
+  if (!soc_initialized) return 0;
+
+  float max_current = charging_config.max_charge_current_a;
+
+  // Factor 1: Cell voltage imbalance - reduce current if cells are imbalanced
+  float max_diff_mv = get_max_cell_voltage_diff_mv(cell_voltages_filtered_uv, bcc0_config->cell_count);
+  if (max_diff_mv > charging_config.balance_threshold_mv) {
+    // Reduce current proportionally to imbalance
+    float reduction_factor = 1.0f - (max_diff_mv - charging_config.balance_threshold_mv) / 100.0f;
+    if (reduction_factor < 0.3f) reduction_factor = 0.3f;  // Minimum 30% current
+    max_current *= reduction_factor;
+  }
+
+  // Factor 2: Taper current as we approach target voltage
+  uint8_t cell_count = bcc0_config->cell_count;
+  if (cell_count > 0) {
+    uint32_t total_voltage = 0;
+    for (uint8_t i = 0; i < cell_count; i++) {
+      total_voltage += cell_voltages_filtered_uv[i];
+    }
+    float avg_cell_voltage = total_voltage / (float)cell_count / 1000000.0f;
+    float target_voltage = charging_config.target_cell_voltage;
+
+    // Start tapering at 95% of target voltage
+    float taper_start_voltage = target_voltage * 0.95f;
+    if (avg_cell_voltage > taper_start_voltage) {
+      float taper_factor = (target_voltage - avg_cell_voltage) / (target_voltage - taper_start_voltage);
+      if (taper_factor < 0.2f) taper_factor = 0.2f;  // Minimum 20% current during taper
+      max_current *= taper_factor;
+    }
+  }
+
+  // Factor 3: SOC-based current limiting (taper at high SOC)
+  if (current_soc_percent > 90.0f) {
+    float soc_factor = (100.0f - current_soc_percent) / 10.0f;  // Linear reduction from 90-100%
+    if (soc_factor < 0.2f) soc_factor = 0.2f;
+    max_current *= soc_factor;
+  }
+
+  // Factor 4: Temperature derating (if we have temperature faults)
+  if (has_temperature_fault) {
+    max_current *= 0.5f;  // Reduce to 50% if temperature fault
+  }
+
+  // Minimum current to request is 5A (below that, stop charging)
+  if (max_current < 5.0f) {
+    return 0;
+  }
+
+  return (uint16_t)max_current;
+}
+
+// CHAdeMO Integration
+bool BatteryManagementSystem::is_chademo_ready() const {
+  if (!chademo) return false;
+  if (!ivt_shunt || !ivt_shunt->is_alive()) return false;
+  if (!soc_initialized) return false;
+  if (has_faults()) return false;
+  if (contactor_fault) return false;
+
+  // Check EVSE capabilities are sufficient
+  uint16_t evse_max_voltage = chademo->get_evse_max_voltage();
+  uint16_t evse_max_current = chademo->get_evse_max_current();
+  uint16_t target_voltage = get_target_stack_voltage();
+
+  // EVSE max voltage should be at least our target voltage
+  if (evse_max_voltage > 0 && evse_max_voltage < target_voltage) {
+    Serial.printf("BMS: EVSE max voltage (%dV) below target (%dV)\r\n",
+                  evse_max_voltage, target_voltage);
+    return false;
+  }
+
+  // EVSE should support at least minimum charging current
+  if (evse_max_current > 0 && evse_max_current < 5) {
+    Serial.printf("BMS: EVSE max current (%dA) too low (min 5A)\r\n", evse_max_current);
+    return false;
+  }
+
+  return true;
+}
+
+void BatteryManagementSystem::start_chademo_charging() {
+  if (!chademo) {
+    Serial.println("BMS: CHAdeMO controller not configured");
+    return;
+  }
+
+  if (!is_chademo_ready()) {
+    Serial.println("BMS: CHAdeMO not ready to charge");
+    return;
+  }
+
+  // Get target voltage from BMS config
+  uint16_t target_voltage = get_target_stack_voltage();
+
+  // Get maximum safe current based on battery conditions
+  uint16_t max_current = calculate_safe_charge_current();
+  if (max_current == 0) {
+    Serial.println("BMS: Cannot start charging - safe current is 0A");
+    return;
+  }
+
+  // Cap current to EVSE maximum capability
+  uint16_t evse_max_current = chademo->get_evse_max_current();
+  if (evse_max_current > 0 && max_current > evse_max_current) {
+    Serial.printf("BMS: Limiting charge current from %dA to EVSE max %dA\r\n",
+                  max_current, evse_max_current);
+    max_current = evse_max_current;
+  }
+
+  Serial.printf("BMS: Starting CHAdeMO charging session (target %dV, max %dA)\r\n",
+                target_voltage, max_current);
+
+  // Start CHAdeMO charging session
+  chademo->start_charging(target_voltage, max_current);
+
+  // Transition BMS to charging state
+  start_charging();
+}
+
+void BatteryManagementSystem::stop_chademo_charging() {
+  if (!chademo) return;
+
+  Serial.println("BMS: Stopping CHAdeMO charging session");
+
+  chademo->stop_charging();
+  stop_charging();
 }
 
 // HV CAN task - periodically broadcasts HV system state and BMS state
@@ -1680,13 +1749,8 @@ void BatteryManagementSystem::hv_can_task_loop() {
       if (contactor_fault) data[4] |= (1 << 5);
       if (communication_lost) data[4] |= (1 << 6);
 
-      // Byte 5: Additional status
+      // Bytes 5-7: Reserved
       data[5] = 0;
-      if (evse != nullptr && evse->is_connected()) data[5] |= (1 << 0);
-      if (evse != nullptr && evse->is_ready_to_charge()) data[5] |= (1 << 1);
-      if (PCSController::is_charge_enabled) data[5] |= (1 << 2);
-
-      // Bytes 6-7: Reserved
       data[6] = 0;
       data[7] = 0;
 
@@ -1697,4 +1761,67 @@ void BatteryManagementSystem::hv_can_task_loop() {
     // Wait for next broadcast interval
     vTaskDelay(pdMS_TO_TICKS(BROADCAST_INTERVAL_MS));
   }
+}
+
+// Update libopeninv spot values (read-only parameters)
+void BatteryManagementSystem::update_spot_values() {
+  // Pack voltages (convert uV to V)
+  Param::SetFloat(Param::packVoltage, stack_voltage_uv / 1000000.0f);
+  Param::SetFloat(Param::packVoltFilt, stack_voltage_filtered_uv / 1000000.0f);
+
+  // Pack current from IVT shunt
+  if (ivt_shunt && ivt_shunt->is_alive()) {
+    Param::SetFloat(Param::packCurrent, ivt_shunt->get_current());
+  } else {
+    Param::SetFloat(Param::packCurrent, 0.0f);
+  }
+
+  // SOC values
+  Param::SetInt(Param::soc, (int)current_soc_percent);
+  Param::SetFloat(Param::socPrecise, current_soc_percent);
+
+  // BMS and HV states
+  Param::SetInt(Param::bmsState, (int)current_state);
+  Param::SetInt(Param::hvState, (int)hv_state);
+
+  // Cell voltage statistics
+  uint8_t cell_count = bcc0_config->cell_count + bcc1_config->cell_count;
+  if (cell_count > 0) {
+    uint32_t min_cell_uv = cell_voltages_filtered_uv[0];
+    uint32_t max_cell_uv = cell_voltages_filtered_uv[0];
+
+    for (uint8_t i = 1; i < cell_count; i++) {
+      if (cell_voltages_filtered_uv[i] < min_cell_uv) {
+        min_cell_uv = cell_voltages_filtered_uv[i];
+      }
+      if (cell_voltages_filtered_uv[i] > max_cell_uv) {
+        max_cell_uv = cell_voltages_filtered_uv[i];
+      }
+    }
+
+    // Convert uV to mV
+    Param::SetInt(Param::maxCellVolt, max_cell_uv / 1000);
+    Param::SetInt(Param::minCellVolt, min_cell_uv / 1000);
+    Param::SetInt(Param::cellVoltDiff, (max_cell_uv - min_cell_uv) / 1000);
+  }
+
+  // Safe charge current
+  Param::SetInt(Param::safeChargeCurrent, calculate_safe_charge_current());
+
+  // Initialization status
+  Param::SetInt(Param::bcc0Initialized, bcc0_initialized ? 1 : 0);
+  Param::SetInt(Param::bcc1Initialized, bcc1_initialized ? 1 : 0);
+
+  // Fault status (bit-packed)
+  uint16_t fault_bits = 0;
+  if (has_overvoltage_fault) fault_bits |= (1 << 0);
+  if (has_undervoltage_fault) fault_bits |= (1 << 1);
+  if (has_temperature_fault) fault_bits |= (1 << 2);
+  if (has_cb_open_fault) fault_bits |= (1 << 3);
+  if (has_cb_short_fault) fault_bits |= (1 << 4);
+  Param::SetInt(Param::faultStatus, fault_bits);
+
+  // Communication and contactor status
+  Param::SetInt(Param::commLost, communication_lost ? 1 : 0);
+  Param::SetInt(Param::contactorFault, contactor_fault ? 1 : 0);
 }

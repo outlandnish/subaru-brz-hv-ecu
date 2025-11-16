@@ -16,42 +16,107 @@ CANBus *ipc_can = nullptr;  // IPC CAN for PCS control (500kbps)
 CANBus *m3_can = nullptr;   // M3 CAN for external communication
 CANBus *hv_can = nullptr;   // HV CAN for IVT shunt and vehicle comms (500kbps)
 
-// EVSE, PCS, and IVT controllers
-EVSEController *evse = nullptr;
+// IVT controller
 IVTShunt *ivt_shunt = nullptr;
 
-#define DEVICE_COUNT 8
-#define CELL_COUNT 6
+// CHAdeMO controller (Foccci on M3/CP CAN)
+CHAdeMOController *chademo = nullptr;
 
-// BMS Configuration for BCC0 (single 6S2P pack)
-BatteryCellControllerConfig bcc0_config = {
-  .device_count = DEVICE_COUNT,
-  .cell_count = CELL_COUNT,
-  .enable_pin = BCC0_ENABLE,
-  .intb_pin = BCC0_INTB,
-  .cs_pin = BCC0_TX_CS,
-  .loopback = false
-};
+// HV CAN monitoring
+bool hv_can_monitor_enabled = false;
+uint32_t hv_can_frame_count = 0;
 
-BatteryCellControllerConfig bcc1_config = {
-  .device_count = DEVICE_COUNT,
-  .cell_count = CELL_COUNT,
-  .enable_pin = BCC1_ENABLE,
-  .intb_pin = BCC1_INTB,
-  .cs_pin = BCC1_TX_CS,
-  .loopback = false
-};
+// M3 CAN test message generator
+bool m3_can_test_enabled = false;
+uint32_t m3_can_test_interval_ms = 1000;  // Default 1Hz
+uint32_t m3_can_test_count = 0;
 
-// Charging Configuration
-BMSChargingConfig charging_config = {
-  .target_cell_voltage = 3.6f,      // Target 3.6V per cell
-  .balance_threshold_mv = 50.0f,    // Start balancing when cells differ by 50mV
-  .balance_target_mv = 10.0f,       // Resume charging when cells differ by <10mV
-  .balancing_timer_min = 5,         // Balance for 5 minutes at a time
-  .measurement_interval_ms = 20     // Measure voltages every 20ms (50 Hz)
-};
+// CAN message queues for thread-safe message passing
+QueueHandle_t ipc_can_queue = nullptr;
+QueueHandle_t m3_can_queue = nullptr;
+QueueHandle_t hv_can_queue = nullptr;
+
+#define CAN_QUEUE_LENGTH 32  // Buffer up to 32 messages per bus
+
+// BMS Configuration - will be populated from parameters in setup()
+BatteryCellControllerConfig bcc0_config;
+BatteryCellControllerConfig bcc1_config;
 
 BatteryManagementSystem *bms;
+
+// CAN RX polling task - reads from hardware and puts messages into queues
+void can_rx_task(void *pvParameters) {
+  CAN_FRAME frame;
+  static uint32_t last_debug = 0;
+  static uint32_t ipc_read_count = 0;
+  static uint32_t m3_read_count = 0;
+  static uint32_t hv_read_count = 0;
+
+  while (true) {
+    // Poll IPC CAN bus
+    if (ipc_can && ipc_can->available()) {
+      while (ipc_can->read(frame)) {
+        ipc_read_count++;
+        Serial.printf("IPC RX: 0x%03X\r\n", frame.id);
+        xQueueSend(ipc_can_queue, &frame, 0);
+      }
+    }
+
+    // Poll M3 CAN bus
+    if (m3_can && m3_can->available()) {
+      while (m3_can->read(frame)) {
+        m3_read_count++;
+        Serial.printf("M3 RX: 0x%03X [%d] %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+                      frame.id, frame.length,
+                      frame.data.uint8[0], frame.data.uint8[1], frame.data.uint8[2], frame.data.uint8[3],
+                      frame.data.uint8[4], frame.data.uint8[5], frame.data.uint8[6], frame.data.uint8[7]);
+        xQueueSend(m3_can_queue, &frame, 0);
+      }
+    }
+
+    // Poll HV CAN bus
+    if (hv_can && hv_can->available()) {
+      while (hv_can->read(frame)) {
+        hv_read_count++;
+        Serial.printf("HV RX: 0x%03X [%d] %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+                      frame.id, frame.length,
+                      frame.data.uint8[0], frame.data.uint8[1], frame.data.uint8[2], frame.data.uint8[3],
+                      frame.data.uint8[4], frame.data.uint8[5], frame.data.uint8[6], frame.data.uint8[7]);
+
+        // Put frame in queue
+        xQueueSend(hv_can_queue, &frame, 0);
+      }
+    }
+
+    // Poll every 1ms (1000 Hz)
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+}
+
+// IVT processing task - processes messages from HV CAN queue
+void ivt_process_task(void *pvParameters) {
+  CAN_FRAME frame;
+
+  while (true) {
+    // TODO: replace with HV can when the hardware is fixed
+    // Wait for M3 CAN message (block for up to 10ms)
+    if (xQueueReceive(m3_can_queue, &frame, pdMS_TO_TICKS(10)) == pdTRUE) {
+      // Check if message is for IVT (0x521-0x528 or 0x511)
+      if ((frame.id >= 0x521 && frame.id <= 0x528) || frame.id == 0x511) {
+        if (ivt_shunt) {
+          ivt_shunt->process_can_frame(&frame);
+        }
+      }
+      // Check if message is for CHAdeMO (0x100, 0x102, 0x108, 0x109)
+      else if (frame.id == 0x100 || frame.id == 0x102 || frame.id == 0x108 || frame.id == 0x109) {
+        if (chademo) {
+          chademo->process_can_message(&frame);
+        }
+      }
+    }
+  }
+}
+
 
 // Function to jump directly to STM32 bootloader
 void jump_to_bootloader() {
@@ -148,10 +213,18 @@ void console_task(void *pvParameters) {
             Serial.println("help                  - Show this help message");
             Serial.println("status                - Show current BMS status");
             Serial.println("bcc                   - Show BCC status");
-            Serial.println("evse                  - Show EVSE status");
-            Serial.println("pcs                   - Show PCS status");
             Serial.println("ivt                   - Show IVT shunt status");
+            Serial.println("chademo               - Show CHAdeMO status");
             Serial.println("hv                    - Show HV system status");
+            Serial.println("hv can monitor        - Show HV CAN monitoring status");
+            Serial.println("hv can monitor on     - Enable HV CAN traffic monitoring");
+            Serial.println("hv can monitor off    - Disable HV CAN traffic monitoring");
+            Serial.println("m3 can send <id> <b0> <b1> ... <b7>");
+            Serial.println("                      - Send CAN message on M3 bus (hex values)");
+            Serial.println("m3 can test           - Show test generator status");
+            Serial.println("m3 can test on        - Enable periodic test messages (1Hz IVT)");
+            Serial.println("m3 can test off       - Disable test messages");
+            Serial.println("m3 can test rate <ms> - Set test message interval (ms)");
             Serial.println("reboot                - Software reset (restart application)");
             Serial.println();
 
@@ -179,17 +252,12 @@ void console_task(void *pvParameters) {
               Serial.println();
             }
 
-            Serial.println("=== PCS Control Commands ===");
-            Serial.println("pcs on                - Enable PCS");
-            Serial.println("pcs off               - Disable PCS");
-            Serial.println("pcs dcdc on           - Enable DCDC converter");
-            Serial.println("pcs dcdc off          - Disable DCDC converter");
-            Serial.println("pcs charge on         - Enable AC charging for HV");
-            Serial.println("pcs charge off        - Disable AC charging for HV");
-            Serial.println("pcs voltage <v>       - Set target HV voltage (V)");
-            Serial.println("pcs power <w>         - Set charge power (W)");
-            Serial.println("pcs dcdcvolt <v>      - Set DCDC output voltage (V)");
-            Serial.println("pcs aclimit <a>       - Set AC current limit (A)");
+            Serial.println("=== CHAdeMO (Foccci) Commands ===");
+            Serial.println("chademo start <volts> <amps>");
+            Serial.println("                      - Start CHAdeMO charge session");
+            Serial.println("chademo stop          - Stop CHAdeMO charge session");
+            Serial.println("chademo limits <v> <a>");
+            Serial.println("                      - Set EVSE capabilities (max voltage/current)");
             Serial.println();
           }
           else if (inputBuffer == "status") {
@@ -261,10 +329,12 @@ void console_task(void *pvParameters) {
 
             // Display specific module if requested
             if (module_num >= 0) {
-              uint8_t bcc_chain = (module_num < DEVICE_COUNT) ? 0 : 1;
-              uint8_t module_in_chain = module_num % DEVICE_COUNT;
-              uint8_t start_cell = module_num * CELL_COUNT;
-              uint8_t end_cell = start_cell + CELL_COUNT;
+              uint8_t bcc0_device_count = bcc0_config.device_count;
+              uint8_t cell_count = bcc0_config.cell_count;
+              uint8_t bcc_chain = (module_num < bcc0_device_count) ? 0 : 1;
+              uint8_t module_in_chain = module_num % bcc0_device_count;
+              uint8_t start_cell = module_num * cell_count;
+              uint8_t end_cell = start_cell + cell_count;
 
               if (start_cell >= count) {
                 Serial.printf("Error: Module %d does not exist\r\n\n", module_num);
@@ -279,7 +349,7 @@ void console_task(void *pvParameters) {
 
               for (uint8_t i = start_cell; i < end_cell && i < count; i++) {
                 Serial.printf("  Cell %d: %.4f V  (raw: %.4f V)\r\n",
-                             (i % CELL_COUNT) + 1,
+                             (i % cell_count) + 1,
                              voltages_filtered[i] / 1000000.0f,
                              voltages_raw[i] / 1000000.0f);
                 module_voltage += voltages_filtered[i];
@@ -295,8 +365,10 @@ void console_task(void *pvParameters) {
             }
             // Display summary for all modules
             else if (show_summary) {
-              uint8_t bcc0_modules = DEVICE_COUNT;
-              uint8_t total_modules = DEVICE_COUNT * (bms->is_bcc1_initialized() ? 2 : 1);
+              uint8_t bcc0_device_count = bcc0_config.device_count;
+              uint8_t cell_count = bcc0_config.cell_count;
+              uint8_t bcc0_modules = bcc0_device_count;
+              uint8_t total_modules = bcc0_device_count * (bms->is_bcc1_initialized() ? 2 : 1);
 
               uint32_t total_voltage = 0;
               uint32_t bcc0_voltage = 0;
@@ -306,8 +378,8 @@ void console_task(void *pvParameters) {
               if (bms->is_bcc0_initialized()) {
                 Serial.println("--- BCC0 Module Summary ---");
                 for (uint8_t mod = 0; mod < bcc0_modules; mod++) {
-                  uint8_t start_cell = mod * CELL_COUNT;
-                  uint8_t end_cell = start_cell + CELL_COUNT;
+                  uint8_t start_cell = mod * cell_count;
+                  uint8_t end_cell = start_cell + cell_count;
 
                   uint32_t module_voltage = 0;
                   uint32_t min_v = voltages_filtered[start_cell];
@@ -333,8 +405,8 @@ void console_task(void *pvParameters) {
                 Serial.println("--- BCC1 Module Summary ---");
                 for (uint8_t mod = 0; mod < bcc0_modules; mod++) {
                   uint8_t module_num = mod + bcc0_modules;
-                  uint8_t start_cell = module_num * CELL_COUNT;
-                  uint8_t end_cell = start_cell + CELL_COUNT;
+                  uint8_t start_cell = module_num * cell_count;
+                  uint8_t end_cell = start_cell + cell_count;
 
                   if (start_cell >= count) break;
 
@@ -388,106 +460,6 @@ void console_task(void *pvParameters) {
               Serial.println();
             }
           }
-          else if (inputBuffer == "evse") {
-            Serial.println("\n=== EVSE Status ===");
-            if (evse != nullptr) {
-              const char* state_str[] = {"State A (No Vehicle)", "State B (Connected)", "State C (Ready/Charging)", "State D (Ventilation)", "State E (No Power)", "Fault"};
-              const char* vehicle_str[] = {"Not Ready (State B)", "Ready (State C)", "Ventilation (State D)"};
-              Serial.printf("EVSE State: %s\r\n", state_str[evse->get_state()]);
-              Serial.printf("Vehicle Signaling: %s\r\n", vehicle_str[evse->get_vehicle_state()]);
-              Serial.printf("Cable Limit: %d A\r\n", evse->get_cable_limit());
-              Serial.printf("Available Current: %d mA\r\n", evse->get_available_current_ma());
-              Serial.printf("Max Charge Current: %d mA\r\n", evse->get_max_charge_current_ma());
-              Serial.printf("Connected: %s\r\n", evse->is_connected() ? "Yes" : "No");
-              Serial.printf("Ready to Charge: %s\r\n", evse->is_ready_to_charge() ? "Yes" : "No");
-            } else {
-              Serial.println("EVSE not configured");
-            }
-            Serial.println();
-          }
-          else if (inputBuffer == "pcs") {
-            Serial.println("\n=== PCS Status ===");
-            const char* state_str[] = {"Init", "Off", "WaitStart", "Precharge", "Activate", "Charging", "Drive", "Stop", "Fault"};
-            Serial.printf("State: %s\r\n", state_str[PCSController::get_state()]);
-            Serial.printf("Mode: 0x%02X\r\n", PCSController::get_mode());
-
-            // Get charger status
-            const ChargerStatus& charger = PCSController::get_charger_status();
-            Serial.printf("HW Type: %d ", charger.hw_type);
-            switch(charger.hw_type) {
-              case 0: Serial.println("(11kW)"); break;
-              case 1: Serial.println("(7.7kW)"); break;
-              case 2: Serial.println("(3.8kW)"); break;
-              default: Serial.println("(Unknown)"); break;
-            }
-            Serial.printf("Charge Status: 0x%02X\r\n", charger.status);
-
-            // Show pin states
-            Serial.println("\n--- Control Pins ---");
-            Serial.printf("PCS Enable: %s\r\n", PCSController::is_pcs_enabled() ? "ON" : "OFF");
-            Serial.printf("Charge Enable: %s\r\n", PCSController::is_charge_enabled() ? "ON" : "OFF");
-            Serial.printf("DCDC Enable: %s\r\n", PCSController::is_dcdc_enabled() ? "ON" : "OFF");
-
-            // Show measured values from PCS feedback
-            Serial.println("\n--- Measured Values ---");
-
-            const VoltageData& voltage = PCSController::get_voltage_data();
-            if (voltage.hv_v > 0) {
-              Serial.printf("HV Bus Voltage: %d V\r\n", voltage.hv_v);
-            } else {
-              Serial.println("HV Bus Voltage: No data");
-            }
-
-            if (voltage.lv_v > 0) {
-              Serial.printf("LV (12V) Voltage: %.2f V\r\n", voltage.lv_v);
-            } else {
-              Serial.println("LV (12V) Voltage: No data");
-            }
-
-            const ACStatus& ac = PCSController::get_ac_status();
-            if (ac.voltage_v > 0) {
-              Serial.printf("AC Input Voltage: %d V\r\n", ac.voltage_v);
-              Serial.printf("AC Input Current: %.1f A\r\n", ac.current_a);
-              Serial.printf("AC Input Power: %.2f kW\r\n", ac.power_kw);
-              Serial.printf("AC Current Limit: %d A\r\n", ac.current_limit_a);
-            } else {
-              Serial.println("AC Input: No data");
-            }
-
-            const DCDCStatus& dcdc = PCSController::get_dcdc_status();
-            if (dcdc.current_a > 0) {
-              Serial.printf("DCDC Output Current: %.1f A\r\n", dcdc.current_a);
-              Serial.printf("DCDC Output Power: %.1f W\r\n", dcdc.power_w);
-            } else {
-              Serial.println("DCDC Output: No data");
-            }
-
-            const DCCurrentData& dc_current = PCSController::get_dc_current_data();
-            if (dc_current.total_a > 0) {
-              Serial.printf("DC Output Current: %.1f A\r\n", dc_current.total_a);
-            }
-
-            // Show temperatures
-            Serial.println("\n--- Temperatures ---");
-            const TemperatureData& temp = PCSController::get_temperature_data();
-            Serial.printf("Phase A: %d C\r\n", temp.phase_a_raw);
-            Serial.printf("Phase B: %d C\r\n", temp.phase_b_raw);
-            Serial.printf("Phase C: %d C\r\n", temp.phase_c_raw);
-            Serial.printf("DCDC: %d C\r\n", temp.dcdc_raw);
-            Serial.printf("DCDC B: %.1f C\r\n", temp.dcdc_b_c);
-            Serial.printf("Ambient: %d C\r\n", temp.ambient_raw);
-
-            // Show alerts if any
-            const AlertData& alerts = PCSController::get_alert_data();
-            if (alerts.count > 0) {
-              Serial.println("\n--- Recent Alerts ---");
-              for (uint8_t i = 0; i < alerts.count && i < 10; i++) {
-                Serial.printf("  Alert %d: 0x%02X\r\n", i, alerts.matrix[i]);
-              }
-            }
-
-            Serial.println();
-          }
           else if (inputBuffer == "ivt") {
             Serial.println("\n=== IVT Shunt Status ===");
             if (ivt_shunt != nullptr) {
@@ -506,6 +478,48 @@ void console_task(void *pvParameters) {
               Serial.println("IVT shunt not configured");
             }
             Serial.println();
+          }
+          else if (inputBuffer == "chademo") {
+            Serial.println("\n=== CHAdeMO Status ===");
+            if (chademo != nullptr) {
+              const char* state_str[] = {"Idle", "Connected", "Precharge", "Charging", "Ending", "Error", "Timeout"};
+              Serial.printf("State: %s\r\n", state_str[chademo->get_state()]);
+              Serial.printf("Connected: %s\r\n", chademo->is_connected() ? "Yes" : "No");
+              Serial.printf("Charging: %s\r\n", chademo->is_charging() ? "Yes" : "No");
+              Serial.printf("EVSE Voltage: %d V\r\n", chademo->get_evse_voltage());
+              Serial.printf("EVSE Current: %d A\r\n", chademo->get_evse_current());
+              Serial.printf("Time Since Last RX: %lu ms\r\n", chademo->get_time_since_last_rx());
+              if (chademo->has_timeout()) {
+                Serial.println("WARNING: Communication timeout!");
+              }
+            } else {
+              Serial.println("CHAdeMO not configured");
+            }
+            Serial.println();
+          }
+          else if (inputBuffer.startsWith("chademo start ")) {
+            if (chademo == nullptr) {
+              Serial.println("\nError: CHAdeMO not configured\n");
+            } else {
+              String args = inputBuffer.substring(14);
+              int spaceIdx = args.indexOf(' ');
+              if (spaceIdx > 0) {
+                uint16_t voltage = args.substring(0, spaceIdx).toInt();
+                uint16_t current = args.substring(spaceIdx + 1).toInt();
+                Serial.printf("\nStarting CHAdeMO charge: %dV, %dA\r\n", voltage, current);
+                chademo->start_charging(voltage, current);
+              } else {
+                Serial.println("\nError: Usage: chademo start <volts> <amps>\n");
+              }
+            }
+          }
+          else if (inputBuffer == "chademo stop") {
+            if (chademo == nullptr) {
+              Serial.println("\nError: CHAdeMO not configured\n");
+            } else {
+              Serial.println("\nStopping CHAdeMO charge\n");
+              chademo->stop_charging();
+            }
           }
           else if (inputBuffer == "hv") {
             Serial.println("\n=== HV System Status ===");
@@ -606,9 +620,8 @@ void console_task(void *pvParameters) {
               String value = inputBuffer.substring(15);
               float voltage = value.toFloat();
               if (voltage >= 2.5 && voltage <= 4.2) {
-                charging_config.target_cell_voltage = voltage;
-                bms->set_charging_config(charging_config);
-                Serial.printf("\nTarget voltage set to %.2f V\r\n\n", voltage);
+                Param::SetFloat(Param::targetCellVolt, voltage);
+                Serial.printf("\nTarget voltage set to %.2f V (will take effect after reboot)\r\n\n", voltage);
               } else {
                 Serial.println("\nError: Voltage must be between 2.5V and 4.2V\n");
               }
@@ -621,9 +634,8 @@ void console_task(void *pvParameters) {
               String value = inputBuffer.substring(19);
               float threshold = value.toFloat();
               if (threshold >= 1.0 && threshold <= 500.0) {
-                charging_config.balance_threshold_mv = threshold;
-                bms->set_charging_config(charging_config);
-                Serial.printf("\nBalance threshold set to %.1f mV\r\n\n", threshold);
+                Param::SetFloat(Param::balanceThreshold, threshold);
+                Serial.printf("\nBalance threshold set to %.1f mV (will take effect after reboot)\r\n\n", threshold);
               } else {
                 Serial.println("\nError: Threshold must be between 1.0 and 500.0 mV\n");
               }
@@ -636,9 +648,8 @@ void console_task(void *pvParameters) {
               String value = inputBuffer.substring(20);
               float target = value.toFloat();
               if (target >= 1.0 && target <= 100.0) {
-                charging_config.balance_target_mv = target;
-                bms->set_charging_config(charging_config);
-                Serial.printf("\nBalance target set to %.1f mV\r\n\n", target);
+                Param::SetFloat(Param::balanceTarget, target);
+                Serial.printf("\nBalance target set to %.1f mV (will take effect after reboot)\r\n\n", target);
               } else {
                 Serial.println("\nError: Target must be between 1.0 and 100.0 mV\n");
               }
@@ -651,110 +662,12 @@ void console_task(void *pvParameters) {
               String value = inputBuffer.substring(17);
               uint16_t interval = value.toInt();
               if (interval >= 100 && interval <= 10000) {
-                charging_config.measurement_interval_ms = interval;
-                bms->set_charging_config(charging_config);
-                Serial.printf("\nMeasurement interval set to %d ms\r\n\n", interval);
+                Param::SetInt(Param::measureInterval, interval);
+                Serial.printf("\nMeasurement interval set to %d ms (will take effect after reboot)\r\n\n", interval);
               } else {
                 Serial.println("\nError: Interval must be between 100 and 10000 ms\n");
               }
             }
-          }
-          else if (inputBuffer == "pcs on") {
-            Serial.println("\nEnabling PCS...");
-            if (PCSController::enable_pcs_async(true)) {
-              Serial.println("PCS enable command sent");
-            } else {
-              Serial.println("Error: Failed to send command");
-            }
-            Serial.println();
-          }
-          else if (inputBuffer == "pcs off") {
-            Serial.println("\nDisabling PCS...");
-            if (PCSController::enable_pcs_async(false)) {
-              Serial.println("PCS disable command sent");
-            } else {
-              Serial.println("Error: Failed to send command");
-            }
-            Serial.println();
-          }
-          else if (inputBuffer == "pcs dcdc on") {
-            Serial.println("\nStarting drive mode (DCDC only)...");
-            if (PCSController::start_drive_mode_async()) {
-              Serial.println("Drive mode command sent");
-              Serial.println("Note: BMS must handle HV precharge sequence");
-            } else {
-              Serial.println("Error: Failed to send command");
-            }
-            Serial.println();
-          }
-          else if (inputBuffer == "pcs dcdc off") {
-            Serial.println("\nStopping drive mode...");
-            if (PCSController::stop_async()) {
-              Serial.println("Stop command sent");
-            } else {
-              Serial.println("Error: Failed to send command");
-            }
-            Serial.println();
-          }
-          else if (inputBuffer == "pcs charge on") {
-            Serial.println("\nStarting charging mode...");
-            if (PCSController::start_charging_async()) {
-              Serial.println("Charging mode command sent");
-              Serial.println("Note: BMS must handle HV precharge sequence");
-            } else {
-              Serial.println("Error: Failed to send command");
-            }
-            Serial.println();
-          }
-          else if (inputBuffer == "pcs charge off") {
-            Serial.println("\nStopping charging mode...");
-            if (PCSController::stop_async()) {
-              Serial.println("Stop command sent");
-            } else {
-              Serial.println("Error: Failed to send command");
-            }
-            Serial.println();
-          }
-          else if (inputBuffer.startsWith("pcs voltage ")) {
-            String value = inputBuffer.substring(12);
-            uint16_t voltage_mv = value.toInt();
-            if (voltage_mv >= 0 && voltage_mv <= 500000) {  // 0-500V range
-              Serial.printf("\nSetting hv voltage to %d mV (%.1f V)...\r\n", voltage_mv, voltage_mv / 1000.0f);
-              if (PCSController::set_hv_voltage_async(voltage_mv)) {
-                Serial.println("Target voltage command sent");
-              } else {
-                Serial.println("Error: Failed to send command");
-              }
-            } else {
-              Serial.println("\nError: Voltage must be between 0 and 500000 mV (0-500V)");
-            }
-            Serial.println();
-          }
-          else if (inputBuffer.startsWith("pcs power ")) {
-            String value = inputBuffer.substring(10);
-            uint16_t power_w = value.toInt();
-            if (power_w >= 0 && power_w <= 65535) {
-              Serial.printf("\nSetting charge power to %d W (%.2f kW)...\r\n", power_w, power_w / 1000.0f);
-              if (PCSController::set_charge_power_async(power_w)) {
-                Serial.println("Charge power command sent");
-              } else {
-                Serial.println("Error: Failed to send command");
-              }
-            } else {
-              Serial.println("\nError: Power must be between 0 and 65535 W");
-            }
-            Serial.println();
-          }
-          else if (inputBuffer.startsWith("pcs ramprate ")) {
-            String value = inputBuffer.substring(13);
-            uint16_t ramp_rate = value.toInt();
-            if (ramp_rate >= 10 && ramp_rate <= 5000) {
-              // Serial.printf("\nSetting power ramp rate to %d W/s...\r\n", ramp_rate);
-              // pcs->set_power_ramp_rate_w_per_s(ramp_rate);
-            } else {
-              Serial.println("\nError: Ramp rate must be between 10 and 5000 W/s");
-            }
-            Serial.println();
           }
           else {
             Serial.printf("\nUnknown command: %s\r\n", inputBuffer.c_str());
@@ -779,6 +692,44 @@ void setup() {
   Serial.println("=== BMS Charging System for Dual 6S2P Packs ===");
   Serial.println();
 
+  // Initialize libopeninv parameter system
+  Serial.println("Initializing parameter system...");
+  Param::LoadDefaults();
+  int param_load_result = parm_load();
+  if (param_load_result == 0) {
+    Serial.println("Parameters loaded from flash");
+  } else {
+    Serial.println("No saved parameters found, using defaults");
+  }
+  Serial.println();
+
+  // Configure BCC hardware from parameters
+  Serial.println("Configuring BCC hardware from parameters...");
+  bcc0_config.device_count = Param::GetInt(Param::bcc0DeviceCount);
+  bcc0_config.cell_count = Param::GetInt(Param::bcc0CellCount);
+  bcc0_config.enable_pin = BCC0_ENABLE;
+  bcc0_config.intb_pin = BCC0_INTB;
+  bcc0_config.cs_pin = BCC0_TX_CS;
+  bcc0_config.loopback = false;
+
+  bcc1_config.device_count = Param::GetInt(Param::bcc1DeviceCount);
+  bcc1_config.cell_count = Param::GetInt(Param::bcc1CellCount);
+  bcc1_config.enable_pin = BCC1_ENABLE;
+  bcc1_config.intb_pin = BCC1_INTB;
+  bcc1_config.cs_pin = BCC1_TX_CS;
+  bcc1_config.loopback = false;
+
+  Serial.printf("  BCC0: %d devices x %d cells = %d total cells\r\n",
+                bcc0_config.device_count, bcc0_config.cell_count,
+                bcc0_config.device_count * bcc0_config.cell_count);
+  Serial.printf("  BCC1: %d devices x %d cells = %d total cells\r\n",
+                bcc1_config.device_count, bcc1_config.cell_count,
+                bcc1_config.device_count * bcc1_config.cell_count);
+  Serial.printf("  Total: %d cells\r\n",
+                (bcc0_config.device_count * bcc0_config.cell_count) +
+                (bcc1_config.device_count * bcc1_config.cell_count));
+  Serial.println();
+
   // Initialize NeoPixel strip
   Serial.println("Initializing status LEDs...");
   strip.begin();
@@ -792,48 +743,37 @@ void setup() {
   } else {
     Serial.println("IPC CAN initialized at 500kbps");
   }
+  ipc_can->watchFor();
 
-  m3_can = new CANBus(M3_CAN_RX, M3_CAN_TX, M3_CAN_TERM);
+  m3_can = new CANBus(M3_CAN_RX, M3_CAN_TX);
   if (!m3_can->begin(CAN_BPS_500K)) {  // 500kbps for M3 CAN
     Serial.println("ERROR: Failed to initialize M3 CAN!");
   } else {
     Serial.println("M3 CAN initialized at 500kbps");
-    m3_can->setTermination(true);  // Enable termination resistor
   }
+  ipc_can->watchFor();
 
-  hv_can = new CANBus(HV_CAN_RX, HV_CAN_TX, HV_CAN_TERM);
+  hv_can = new CANBus(HV_CAN_RX, HV_CAN_TX);
   if (!hv_can->begin(CAN_BPS_500K)) {  // 500kbps for HV CAN
     Serial.println("ERROR: Failed to initialize HV CAN!");
   } else {
     Serial.println("HV CAN initialized at 500kbps");
-    hv_can->setTermination(true);  // Enable termination resistor
   }
   Serial.println();
-
-  // Initialize EVSE controller
-  Serial.println("Initializing EVSE controller...");
-  evse = new EVSEController(PROXIMITY_PILOT_INPUT, CONTROL_PILOT_INPUT, CONTROL_PILOT_OUTPUT);
-  evse->begin();
-  Serial.println("EVSE controller initialized");
-  Serial.println();
-
-  // Initialize PCS controller
-  Serial.println("Initializing PCS controller...");
-  PCSController::begin(ipc_can, PCS_ENABLE_CONTROL, PCS_CHARGE_CONTROL, PCS_DCDC_CONTROL);
-  Serial.println();
-
-  // Start PCS task
-  Serial.println("Starting PCS task...");
-  if (!PCSController::start_task()) {
-    Serial.println("ERROR: Failed to start PCS task!");
-  }
-  Serial.println();
+  hv_can->watchFor();
 
   // Initialize IVT current shunt
   Serial.println("Initializing IVT current shunt...");
   ivt_shunt = new IVTShunt();
   ivt_shunt->begin(hv_can);
   Serial.println("IVT shunt initialized");
+  Serial.println();
+
+  // Initialize CHAdeMO controller on M3/CP CAN
+  Serial.println("Initializing CHAdeMO controller (Foccci)...");
+  chademo = new CHAdeMOController();
+  chademo->begin(m3_can);
+  Serial.println("CHAdeMO controller initialized");
   Serial.println();
 
   // Create BMS instance with both BCC0 and BCC1 enabled
@@ -843,24 +783,23 @@ void setup() {
   // Set status LEDs
   bms->set_status_leds(&strip);
 
-  // Configure charging parameters
-  Serial.println("Configuring charging parameters:");
-  Serial.printf("  Target cell voltage: %.2f V\r\n", charging_config.target_cell_voltage);
-  Serial.printf("  Balance threshold: %.1f mV\r\n", charging_config.balance_threshold_mv);
-  Serial.printf("  Balance target: %.1f mV\r\n", charging_config.balance_target_mv);
+  // Display loaded charging parameters
+  Serial.println("Charging parameters loaded from parameter system:");
+  Serial.printf("  Target cell voltage: %.2f V\r\n", Param::GetFloat(Param::targetCellVolt));
+  Serial.printf("  Balance threshold: %.1f mV\r\n", Param::GetFloat(Param::balanceThreshold));
+  Serial.printf("  Balance target: %.1f mV\r\n", Param::GetFloat(Param::balanceTarget));
   Serial.printf("  Measurement interval: %d ms (%.1f Hz)\r\n",
-                charging_config.measurement_interval_ms,
-                1000.0f / charging_config.measurement_interval_ms);
+                Param::GetInt(Param::measureInterval),
+                1000.0f / Param::GetInt(Param::measureInterval));
+  Serial.printf("  Battery capacity: %.1f Ah\r\n", Param::GetFloat(Param::batteryCapacity));
+  Serial.printf("  Max charge current: %.1f A\r\n", Param::GetFloat(Param::maxChargeCurrent));
   Serial.println();
 
-  bms->set_charging_config(charging_config);
-
-  // Configure EVSE and IVT shunt
-  Serial.println("Configuring EVSE and IVT shunt with BMS...");
-  bms->set_evse(evse);
+  // Configure IVT shunt and CHAdeMO
+  Serial.println("Configuring IVT shunt and CHAdeMO with BMS...");
   bms->set_ivt_shunt(ivt_shunt);
+  bms->set_chademo(chademo);
   bms->set_can_buses(ipc_can, m3_can, hv_can);
-  // Note: PCS is now controlled via static PCSCan class
 
   // Configure contactor control pins
   Serial.println("Configuring contactor control...");
@@ -897,9 +836,78 @@ void setup() {
   Serial.println("BMS tasks started successfully!");
   Serial.println();
 
+  // Create CAN message queues
+  Serial.println("Creating CAN message queues...");
+  ipc_can_queue = xQueueCreate(CAN_QUEUE_LENGTH, sizeof(CAN_FRAME));
+  m3_can_queue = xQueueCreate(CAN_QUEUE_LENGTH, sizeof(CAN_FRAME));
+  hv_can_queue = xQueueCreate(CAN_QUEUE_LENGTH, sizeof(CAN_FRAME));
+
+  if (!ipc_can_queue || !m3_can_queue || !hv_can_queue) {
+    Serial.println("ERROR: Failed to create CAN queues!");
+    Serial.println("System halted.");
+    while (1) {
+      delay(1000);
+    }
+  }
+
+  Serial.println("CAN queues created");
+  Serial.println();
+
+  // Create CAN RX polling task (high priority - reads from hardware)
+  Serial.println("Starting CAN RX task...");
+  BaseType_t result = xTaskCreate(
+    can_rx_task,
+    "CAN RX",
+    1024,
+    NULL,
+    4,  // Very high priority for hardware polling
+    NULL
+  );
+
+  if (result != pdPASS) {
+    Serial.println("ERROR: Failed to create CAN RX task!");
+    Serial.println("System halted.");
+    while (1) {
+      delay(1000);
+    }
+  }
+
+  Serial.println("CAN RX task started");
+  Serial.println();
+
+  // Create IVT processing task (processes HV CAN messages for IVT)
+  Serial.println("Starting IVT processing task...");
+  result = xTaskCreate(
+    ivt_process_task,
+    "IVT Proc",
+    1536,
+    NULL,
+    3,  // High priority for message processing
+    NULL
+  );
+
+  if (result != pdPASS) {
+    Serial.println("ERROR: Failed to create IVT processing task!");
+    Serial.println("System halted.");
+    while (1) {
+      delay(1000);
+    }
+  }
+
+  Serial.println("IVT processing task started");
+  Serial.println();
+
+  if (result != pdPASS) {
+    Serial.println("ERROR: Failed to create M3 test task!");
+    Serial.println("System halted.");
+    while (1) {
+      delay(1000);
+    }
+  }
+
   // Create console task for user interaction
   Serial.println("Starting serial console...");
-  BaseType_t result = xTaskCreate(
+  result = xTaskCreate(
     console_task,
     "Console",
     2048,
@@ -936,4 +944,3 @@ void setup() {
 void loop() {
   // Empty - FreeRTOS tasks run instead
 }
-

@@ -6,16 +6,10 @@
 #include "hal/dma_config.h"
 #include <Adafruit_NeoPixel.h>
 #include <HardwareTimer.h>
-#include "evse/evse.h"
-#include "pcs/pcs.h"
 #include "can.h"
 #include "ivt-s/ivt_shunt.h"
-
-// Contactor PWM settings
-#define CONTACTOR_PWM_FREQ 25000     // 25kHz PWM frequency (above audible range)
-#define CONTACTOR_ENGAGE_DUTY 100    // 100% duty cycle to engage (pull-in)
-#define CONTACTOR_HOLD_DUTY 30       // 30% duty cycle to hold (economizer)
-#define CONTACTOR_ENGAGE_TIME_MS 100 // Hold at 100% for 100ms before dropping to hold duty
+#include "chademo/chademo.h"
+#include "params.h"
 
 // HV System States
 enum HV_State : uint8_t {
@@ -65,6 +59,10 @@ struct BMSChargingConfig {
   float balance_target_mv;        // Cell voltage difference to resume charging (mV)
   uint16_t balancing_timer_min;   // Balancing timer duration in minutes
   uint16_t measurement_interval_ms; // How often to measure voltages
+  float battery_capacity_ah;      // Total battery capacity in Ah
+  float max_charge_current_a;     // Maximum charge current in amps
+  float min_soc_percent;          // Minimum SOC before cutoff (%)
+  float max_soc_percent;          // Maximum SOC (typically 100%)
 };
 
 class BatteryManagementSystem {
@@ -133,15 +131,21 @@ class BatteryManagementSystem {
   uint32_t negative_contactor_channel;
   bool contactors_use_pwm;
 
-  // EVSE Controller
-  EVSEController *evse;
-
   // IVT Current Shunt
   IVTShunt *ivt_shunt;
 
+  // CHAdeMO Controller (Foccci charger on M3/CP CAN)
+  CHAdeMOController *chademo;
+
+  // SOC tracking (coulomb counting)
+  float current_soc_percent;           // Current state of charge (0-100%)
+  float accumulated_charge_ah;         // Accumulated charge in Ah
+  uint32_t last_soc_update_time;       // Last time SOC was updated
+  bool soc_initialized;                // Whether SOC has been initialized
+
   // CAN buses
   CANBus *ipc_can;
-  CANBus *m3_can;
+  CANBus *m3_can;  // Also used for CHAdeMO (CP CAN)
   CANBus *hv_can;
 
   // NeoPixel status LEDs
@@ -170,7 +174,7 @@ class BatteryManagementSystem {
   void apply_cell_balancing(BatteryCellController *bcc, uint8_t *cells_to_balance,
                            uint8_t cell_count);
   void stop_cell_balancing(BatteryCellController *bcc, uint8_t cell_count);
-  float get_max_cell_voltage_diff_mv(uint32_t *cell_voltages, uint8_t cell_count);
+  float get_max_cell_voltage_diff_mv(const uint32_t *cell_voltages, uint8_t cell_count) const;
   bool has_reached_target_voltage(uint32_t *cell_voltages, uint8_t cell_count);
 
   // HV system control
@@ -179,6 +183,10 @@ class BatteryManagementSystem {
   void update_hv_state();         // Update HV state machine
   bool is_precharge_complete();   // Check if precharge voltage reached
 
+  // SOC tracking
+  void update_soc();              // Update SOC using coulomb counting from IVT
+  void initialize_soc_from_voltage();  // Initialize SOC from cell voltages on startup
+
   // Legacy contactor control (will be replaced by HV state machine)
   void enable_contactors();
   void disable_contactors();
@@ -186,8 +194,6 @@ class BatteryManagementSystem {
 
   // LED control
   void update_status_leds();
-  void update_pcs_led();             // Update LED 4 for PCS state
-  void update_evse_led();
   void update_hv_led();              // Update LED 2 for HV state
   void set_led_color(uint8_t led, uint32_t color);
   void set_state_leds(uint32_t color);  // Set LEDs 0-1 for BMS state indication
@@ -214,9 +220,9 @@ class BatteryManagementSystem {
     void set_contactor_pins(uint8_t contactor1, uint8_t contactor2, uint8_t enable, uint8_t fault);
     void set_status_leds(Adafruit_NeoPixel *leds);
 
-    // EVSE and IVT configuration
-    void set_evse(EVSEController *evse_controller);
+    // IVT and CHAdeMO configuration
     void set_ivt_shunt(IVTShunt *shunt);
+    void set_chademo(CHAdeMOController *chademo_controller);
     void set_can_buses(CANBus *ipc_can_bus, CANBus *m3_can_bus, CANBus *hv_can_bus);
 
     // Start the BMS tasks
@@ -261,13 +267,27 @@ class BatteryManagementSystem {
                         (total_bcc0_cells + total_bcc1_cells));
     }
 
-    // EVSE and IVT status
-    EVSEController* get_evse() const { return evse; }
+    // IVT and CHAdeMO status
     IVTShunt* get_ivt_shunt() const { return ivt_shunt; }
+    CHAdeMOController* get_chademo() const { return chademo; }
+
+    // SOC and current calculation
+    uint8_t get_soc() const { return (uint8_t)current_soc_percent; }
+    float get_soc_precise() const { return current_soc_percent; }
+    void set_soc(float soc_percent);  // Manually set SOC (e.g., after full charge)
+    uint16_t calculate_safe_charge_current() const;  // Calculate safe charge current based on conditions
+
+    // CHAdeMO charging integration
+    void start_chademo_charging();
+    void stop_chademo_charging();
+    bool is_chademo_ready() const;    // Check if CHAdeMO is ready to charge
 
     // Register dump
     void dump_registers();
     void print_fault_status();
 
     BMS_State enable_sleep_mode();
+
+    // Update libopeninv spot values (read-only parameters)
+    void update_spot_values();
 };
