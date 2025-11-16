@@ -87,15 +87,15 @@ bool CANBus::begin(uint32_t baudrate) {
   hcan->Instance = can_instance;
 
   // Configure CAN parameters
-  // Assuming 45MHz CAN clock for STM32F4
+  // APB1 Clock = 48 MHz (measured via HAL_RCC_GetPCLK1Freq())
   uint32_t prescaler;
   uint32_t bs1, bs2;
 
   switch(baudrate) {
-    case CAN_BPS_125K:  prescaler = 18; bs1 = CAN_BS1_13TQ; bs2 = CAN_BS2_2TQ; break;
-    case CAN_BPS_250K:  prescaler = 9;  bs1 = CAN_BS1_13TQ; bs2 = CAN_BS2_2TQ; break;
-    case CAN_BPS_500K:  prescaler = 6;  bs1 = CAN_BS1_11TQ; bs2 = CAN_BS2_3TQ; break;
-    case CAN_BPS_1000K: prescaler = 3;  bs1 = CAN_BS1_11TQ; bs2 = CAN_BS2_3TQ; break;
+    case CAN_BPS_125K:  prescaler = 24; bs1 = CAN_BS1_12TQ; bs2 = CAN_BS2_3TQ; break;  // 48MHz/(24*16) = 125k
+    case CAN_BPS_250K:  prescaler = 12; bs1 = CAN_BS1_12TQ; bs2 = CAN_BS2_3TQ; break;  // 48MHz/(12*16) = 250k
+    case CAN_BPS_500K:  prescaler = 6;  bs1 = CAN_BS1_12TQ; bs2 = CAN_BS2_3TQ; break;  // 48MHz/(6*16) = 500k
+    case CAN_BPS_1000K: prescaler = 3;  bs1 = CAN_BS1_12TQ; bs2 = CAN_BS2_3TQ; break;  // 48MHz/(3*16) = 1M
     default: return false;
   }
 
@@ -105,7 +105,7 @@ bool CANBus::begin(uint32_t baudrate) {
   hcan->Init.TimeSeg1 = bs1;
   hcan->Init.TimeSeg2 = bs2;
   hcan->Init.TimeTriggeredMode = DISABLE;
-  hcan->Init.AutoBusOff = ENABLE;
+  hcan->Init.AutoBusOff = DISABLE;
   hcan->Init.AutoWakeUp = DISABLE;
   hcan->Init.AutoRetransmission = ENABLE;
   hcan->Init.ReceiveFifoLocked = DISABLE;
