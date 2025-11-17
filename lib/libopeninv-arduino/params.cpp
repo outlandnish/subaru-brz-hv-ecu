@@ -23,8 +23,8 @@
 namespace Param
 {
 
-#define PARAM_ENTRY(category, name, unit, min, max, def, id) { category, #name, unit, FP_FROMFLT(min), FP_FROMFLT(max), FP_FROMFLT(def), id, TYPE_PARAM },
-#define TESTP_ENTRY(category, name, unit, min, max, def, id) { category, #name, unit, FP_FROMFLT(min), FP_FROMFLT(max), FP_FROMFLT(def), id, TYPE_TESTPARAM },
+#define PARAM_ENTRY(category, name, unit, min, max, def, id) { category, #name, unit, min, max, def, id, TYPE_PARAM },
+#define TESTP_ENTRY(category, name, unit, min, max, def, id) { category, #name, unit, min, max, def, id, TYPE_TESTPARAM },
 #define VALUE_ENTRY(name, unit, id) { 0, #name, unit, 0, 0, 0, id, TYPE_SPOTVALUE },
 static const Attributes attribs[] =
 {
@@ -34,10 +34,10 @@ static const Attributes attribs[] =
 #undef TESTP_ENTRY
 #undef VALUE_ENTRY
 
-#define PARAM_ENTRY(category, name, unit, min, max, def, id) FP_FROMFLT(def),
-#define TESTP_ENTRY(category, name, unit, min, max, def, id) FP_FROMFLT(def),
-#define VALUE_ENTRY(name, unit, id) 0,
-static s32fp values[] =
+#define PARAM_ENTRY(category, name, unit, min, max, def, id) def,
+#define TESTP_ENTRY(category, name, unit, min, max, def, id) def,
+#define VALUE_ENTRY(name, unit, id) 0.0f,
+static float values[] =
 {
     PARAM_LIST
 };
@@ -70,19 +70,22 @@ enum _dupes
 
 
 /**
-* Set a parameter
+* Set a parameter (accepts 5-bit fixed-point for CAN SDO compatibility)
 *
 * @param[in] ParamNum Parameter index
-* @param[in] ParamVal New value of parameter
+* @param[in] ParamVal New value of parameter (5-bit fixed-point format)
 * @return 0 if set ok, -1 if ParamVal outside of allowed range
 */
 int Set(PARAM_NUM ParamNum, s32fp ParamVal)
 {
     char res = -1;
+    
+    // Convert from 5-bit fixed-point to float
+    float floatVal = FP_TOFLOAT(ParamVal);
 
-    if (ParamVal >= attribs[ParamNum].min && ParamVal <= attribs[ParamNum].max)
+    if (floatVal >= attribs[ParamNum].min && floatVal <= attribs[ParamNum].max)
     {
-        values[ParamNum] = ParamVal;
+        values[ParamNum] = floatVal;
         Change(ParamNum);
         res = 0;
     }
@@ -90,14 +93,15 @@ int Set(PARAM_NUM ParamNum, s32fp ParamVal)
 }
 
 /**
-* Get a parameters fixed point value
+* Get a parameters fixed point value (returns 5-bit fixed-point for CAN SDO)
 *
 * @param[in] ParamNum Parameter index
-* @return Parameters value
+* @return Parameters value in 5-bit fixed-point format
 */
 s32fp Get(PARAM_NUM ParamNum)
 {
-    return values[ParamNum];
+    // Convert from float to 5-bit fixed-point for SDO protocol
+    return FP_FROMFLT(values[ParamNum]);
 }
 
 /**
@@ -108,7 +112,7 @@ s32fp Get(PARAM_NUM ParamNum)
 */
 int GetInt(PARAM_NUM ParamNum)
 {
-    return FP_TOINT(values[ParamNum]);
+    return (int)values[ParamNum];
 }
 
 /**
@@ -119,7 +123,7 @@ int GetInt(PARAM_NUM ParamNum)
 */
 float GetFloat(PARAM_NUM ParamNum)
 {
-    return FP_TOFLOAT(values[ParamNum]);
+    return values[ParamNum];
 }
 
 /**
@@ -130,7 +134,7 @@ float GetFloat(PARAM_NUM ParamNum)
 */
 bool GetBool(PARAM_NUM ParamNum)
 {
-    return FP_TOINT(values[ParamNum]) == 1;
+    return (int)values[ParamNum] == 1;
 }
 
 /**
@@ -141,18 +145,18 @@ bool GetBool(PARAM_NUM ParamNum)
 */
 void SetInt(PARAM_NUM ParamNum, int ParamVal)
 {
-   values[ParamNum] = FP_FROMINT(ParamVal);
+   values[ParamNum] = (float)ParamVal;
 }
 
 /**
 * Set a parameters fixed point value without range check and callback
 *
 * @param[in] ParamNum Parameter index
-* @param[in] ParamVal New value of parameter
+* @param[in] ParamVal New value of parameter (5-bit fixed-point format)
 */
 void SetFixed(PARAM_NUM ParamNum, s32fp ParamVal)
 {
-   values[ParamNum] = ParamVal;
+   values[ParamNum] = FP_TOFLOAT(ParamVal);
 }
 
 /**
@@ -163,7 +167,7 @@ void SetFixed(PARAM_NUM ParamNum, s32fp ParamVal)
 */
 void SetFloat(PARAM_NUM ParamNum, float ParamVal)
 {
-   values[ParamNum] = FP_FROMFLT(ParamVal);
+   values[ParamNum] = ParamVal;
 }
 
 /**
@@ -229,7 +233,7 @@ void LoadDefaults()
    for (int idx = 0; idx < PARAM_LAST; idx++, curAtr++)
    {
       if (curAtr->id > 0)
-         SetFixed((PARAM_NUM)idx, curAtr->def);
+         values[idx] = curAtr->def;
    }
 }
 

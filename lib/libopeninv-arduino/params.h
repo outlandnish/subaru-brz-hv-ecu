@@ -56,9 +56,9 @@ namespace Param
       char const *category;
       char const *name;
       char const *unit;
-      s32fp min;
-      s32fp max;
-      s32fp def;
+      float min;
+      float max;
+      float def;
       uint16_t id;
       uint16_t type;
    } Attributes;

@@ -61,8 +61,16 @@ static uint32_t GetFlashAddress()
    // Get flash size from device signature
    uint16_t flashSize = *((uint16_t*)0x1FFF7A22); // Flash size in KB
 
-   // Return address of last flash page
-   return FLASH_BASE + (flashSize * 1024) - (PARAM_BLKNUM * PARAM_BLKSIZE);
+   // Calculate address of parameter storage area
+   uint32_t address = FLASH_BASE + (flashSize * 1024) - (PARAM_BLKNUM * PARAM_BLKSIZE);
+   
+   #ifdef DEBUG_PARAM_SAVE
+   Serial.printf("GetFlashAddress: Flash size = %d KB\r\n", flashSize);
+   Serial.printf("GetFlashAddress: FLASH_BASE = 0x%08X\r\n", FLASH_BASE);
+   Serial.printf("GetFlashAddress: Parameter address = 0x%08X\r\n", address);
+   #endif
+   
+   return address;
 }
 
 static uint32_t GetFlashSector(uint32_t address)
@@ -115,8 +123,17 @@ uint32_t parm_save()
 
    parmPage.crc = calculate_crc32((uint32_t*)&parmPage, 2 * NUM_PARAMS);
 
+   Serial.printf("parm_save: Saving parameters to flash at 0x%08X (sector %d)\r\n", paramAddress, sector);
+   Serial.printf("parm_save: Parameter block size: %d bytes (%d words)\r\n", PARAM_BLKSIZE, PARAM_WORDS);
+
    // Unlock flash
-   HAL_FLASH_Unlock();
+   HAL_StatusTypeDef status = HAL_FLASH_Unlock();
+   if (status != HAL_OK)
+   {
+      Serial.printf("ERROR: Failed to unlock flash (status=%d)\r\n", status);
+      return 0;
+   }
+   Serial.println("parm_save: Flash unlocked");
 
    // Erase sector
    FLASH_EraseInitTypeDef eraseInit;
@@ -127,17 +144,37 @@ uint32_t parm_save()
    eraseInit.NbSectors = 1;
    eraseInit.VoltageRange = FLASH_VOLTAGE_RANGE_3; // 2.7V to 3.6V
 
-   HAL_FLASHEx_Erase(&eraseInit, &sectorError);
+   Serial.printf("parm_save: Erasing sector %d...\r\n", sector);
+   status = HAL_FLASHEx_Erase(&eraseInit, &sectorError);
+   if (status != HAL_OK)
+   {
+      Serial.printf("ERROR: Failed to erase sector (status=%d, sectorError=0x%08X)\r\n", status, sectorError);
+      HAL_FLASH_Lock();
+      return 0;
+   }
+   Serial.println("parm_save: Sector erased successfully");
 
    // Program flash
+   Serial.printf("parm_save: Programming %d words...\r\n", PARAM_WORDS);
    for (idx = 0; idx < PARAM_WORDS; idx++)
    {
       uint32_t* pData = ((uint32_t*)&parmPage) + idx;
-      HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, paramAddress + idx * sizeof(uint32_t), *pData);
+      uint32_t addr = paramAddress + idx * sizeof(uint32_t);
+      status = HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, addr, *pData);
+      if (status != HAL_OK)
+      {
+         Serial.printf("ERROR: Failed to program flash at 0x%08X (status=%d, word %d/%d)\r\n", 
+                       addr, status, idx, PARAM_WORDS);
+         HAL_FLASH_Lock();
+         return 0;
+      }
    }
+   Serial.println("parm_save: Flash programmed successfully");
 
    // Lock flash
    HAL_FLASH_Lock();
+   Serial.println("parm_save: Flash locked, parameters saved successfully");
+   Serial.printf("parm_save: CRC32 = 0x%08X\r\n", parmPage.crc);
 
    return parmPage.crc;
 }
@@ -153,10 +190,16 @@ int parm_load()
    uint32_t paramAddress = GetFlashAddress();
    PARAM_PAGE *parmPage = (PARAM_PAGE *)paramAddress;
 
+   Serial.printf("parm_load: Reading from flash at 0x%08X\r\n", paramAddress);
+   Serial.printf("parm_load: Stored CRC = 0x%08X\r\n", parmPage->crc);
+
    uint32_t crc = calculate_crc32((uint32_t*)parmPage, 2 * NUM_PARAMS);
+   Serial.printf("parm_load: Calculated CRC = 0x%08X\r\n", crc);
 
    if (crc == parmPage->crc)
    {
+      Serial.println("parm_load: CRC match, loading parameters...");
+      int loaded = 0;
       for (unsigned int idxPage = 0; idxPage < NUM_PARAMS; idxPage++)
       {
          Param::PARAM_NUM idx = Param::NumFromId(parmPage->data[idxPage].key);
@@ -164,10 +207,18 @@ int parm_load()
          {
             Param::SetFixed(idx, parmPage->data[idxPage].value);
             Param::SetFlagsRaw(idx, parmPage->data[idxPage].flags);
+            loaded++;
          }
       }
+      Serial.printf("parm_load: Successfully loaded %d parameters\r\n", loaded);
       return 0;
    }
 
+   Serial.println("parm_load: CRC mismatch! Parameters NOT loaded");
+   // Check if flash is erased (all 0xFF)
+   if (parmPage->crc == 0xFFFFFFFF)
+   {
+      Serial.println("parm_load: Flash appears to be erased (no saved parameters)");
+   }
    return -1;
 }

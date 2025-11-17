@@ -66,6 +66,9 @@ class CanSdo: CanCallback, public IPutChar
       void SendSdoReply(SdoFrame* sdoFrame);
       void PutChar(char c) override;
       void TriggerTimeout(int callingFrequency);
+      void SetJsonSize(uint32_t size) { jsonSize = size; }
+      void SetPrintCallback(void (*callback)()) { printCallback = callback; }
+      void SetDataSource(int (*getByteCallback)(uint32_t offset)) { dataSourceCallback = getByteCallback; }
 
    private:
       CanHardware* canHardware;
@@ -87,6 +90,10 @@ class CanSdo: CanCallback, public IPutChar
       uint32_t sdoReplyData;
       SdoFrame pendingUserSpaceSdoFrame;
       bool pendingUserSpaceSdo;
+      uint32_t jsonSize;
+      void (*printCallback)();
+      int (*dataSourceCallback)(uint32_t offset);  // Returns byte at offset, or -1 if out of range
+      uint32_t segmentOffset;  // Current offset for segmented transfer
 
       void ProcessSDO(uint32_t data[2]);
       bool ProcessSpecialSDOObjects(SdoFrame *sdo);

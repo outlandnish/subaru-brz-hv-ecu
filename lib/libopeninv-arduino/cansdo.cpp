@@ -19,6 +19,10 @@
 #include "cansdo.h"
 #include "my_math.h"
 #include "errormessage.h"
+#include "param_save.h"
+#ifdef ARDUINO
+#include <Arduino.h>
+#endif
 
 #define SDO_REQ_ID_BASE       0x600U
 #define SDO_REP_ID_BASE       0x580U
@@ -28,7 +32,9 @@
 #define SDO_INDEX_MAP_TX      0x3000
 #define SDO_INDEX_MAP_RX      0x3001
 #define SDO_INDEX_MAP_RD      0x3100
+#define SDO_INDEX_SERIAL      0x5000
 #define SDO_INDEX_STRINGS     0x5001
+#define SDO_INDEX_COMMAND     0x5002
 #define SDO_INDEX_ERROR_NUM   0x5003
 #define SDO_INDEX_ERROR_TIME  0x5004
 
@@ -48,7 +54,8 @@
  : canHardware(hw), canMap(cm), nodeId(1), remoteNodeId(255), printRequest(-1),
    printByteIn(0), printByteOut(sizeof(printBuffer)), printTimeout(PRINT_TIMEOUT),
    mapParam(Param::PARAM_INVALID), mapId(0), sdoReplyValid(false), sdoReplyData(0),
-   pendingUserSpaceSdo(false)
+   pendingUserSpaceSdo(false), jsonSize(0), printCallback(nullptr), 
+   dataSourceCallback(nullptr), segmentOffset(0)
 {
    canHardware->AddCallback(this);
    HandleClear();
@@ -148,13 +155,49 @@ void CanSdo::ProcessSDO(uint32_t data[2])
 
       sdo->cmd = sdo->cmd & SDO_TOGGLE_BIT;
 
-      for (; i <= bytesPerMessage && !PRINT_BUF_EMPTY(); i++)
-         bytes[i] = PRINT_BUF_DEQUEUE();
-
-      if (PRINT_BUF_EMPTY())
+      // Use direct data source if available (for JSON transfer)
+      if (dataSourceCallback != nullptr)
       {
-         sdo->cmd |= SDO_SIZE_SPECIFIED;
-         sdo->cmd |= (bytesPerMessage - i + 1) << 1; //specify how many bytes do NOT contain data
+         for (; i <= bytesPerMessage; i++)
+         {
+            int byte = dataSourceCallback(segmentOffset++);
+            if (byte < 0) break;  // End of data
+            bytes[i] = (uint8_t)byte;
+         }
+         
+         if (i <= bytesPerMessage)  // Reached end of data
+         {
+            sdo->cmd |= SDO_SIZE_SPECIFIED;
+            sdo->cmd |= (bytesPerMessage - i + 1) << 1;
+         }
+      }
+      // Otherwise use legacy buffer-based approach
+      else
+      {
+         // If buffer is low and we have a print callback, refill it
+         uint32_t bufferUsed = sizeof(printBuffer) - (printByteOut - printByteIn);
+         
+         #ifdef ARDUINO
+         Serial.printf("SEG REQ: bufUsed=%lu printReq=%d callback=%p in=%lu out=%lu\r\n", 
+                       bufferUsed, printRequest, printCallback, printByteIn, printByteOut);
+         #endif
+         
+         if (printRequest >= 0 && bufferUsed < 32 && printCallback != nullptr)
+         {
+            #ifdef ARDUINO
+            Serial.println("Calling printCallback to refill buffer");
+            #endif
+            printCallback();  // Refill buffer on-demand
+         }
+
+         for (; i <= bytesPerMessage && !PRINT_BUF_EMPTY(); i++)
+            bytes[i] = PRINT_BUF_DEQUEUE();
+
+         if (PRINT_BUF_EMPTY())
+         {
+            sdo->cmd |= SDO_SIZE_SPECIFIED;
+            sdo->cmd |= (bytesPerMessage - i + 1) << 1;
+         }
       }
    }
    else if (sdo->index == SDO_INDEX_PARAMS || (sdo->index & 0xFF00) == SDO_INDEX_PARAM_UID)
@@ -203,6 +246,65 @@ void CanSdo::ProcessSDO(uint32_t data[2])
    else if (0 != canMap && (sdo->index & 0xFF00) == SDO_INDEX_MAP_RD)
    {
       ReadOrDeleteCanMap(sdo);
+   }
+   else if (sdo->index == SDO_INDEX_SERIAL)
+   {
+      if (sdo->cmd == SDO_READ && sdo->subIndex <= 3)
+      {
+         // Return 128-bit serial number from STM32 unique device ID
+         #ifdef ARDUINO
+         // STM32 unique ID is at 0x1FFF7A10 (3 x 32-bit words)
+         // Map to 4 subindexes by duplicating last word
+         uint32_t* uniqueId = (uint32_t*)0x1FFF7A10UL;
+         if (sdo->subIndex < 3)
+            sdo->data = uniqueId[sdo->subIndex];
+         else
+            sdo->data = uniqueId[2]; // Duplicate last word for subindex 3
+         #else
+         // Fallback for non-Arduino platforms
+         sdo->data = Param::Get(Param::serialNumber) + sdo->subIndex;
+         #endif
+         sdo->cmd = SDO_READ_REPLY;
+      }
+      else
+      {
+         sdo->cmd = SDO_ABORT;
+         sdo->data = SDO_ERR_INVIDX;
+      }
+   }
+   else if (sdo->index == SDO_INDEX_COMMAND)
+   {
+      if (sdo->cmd == SDO_WRITE)
+      {
+         if (sdo->subIndex == 0 && sdo->data == 1)
+         {
+            // Save parameters to flash
+            parm_save();
+            sdo->cmd = SDO_WRITE_REPLY;
+         }
+         else if (sdo->subIndex == 2 && sdo->data == 1)
+         {
+            // Reset/reboot command
+            sdo->cmd = SDO_WRITE_REPLY;
+            // Send reply first, then reboot after a short delay
+            canHardware->Send(0x580 + nodeId, data);
+            // Trigger system reset (platform-specific)
+            #ifdef ARDUINO
+            NVIC_SystemReset();
+            #endif
+            return; // Don't send reply again
+         }
+         else
+         {
+            sdo->cmd = SDO_ABORT;
+            sdo->data = SDO_ERR_INVIDX;
+         }
+      }
+      else
+      {
+         sdo->cmd = SDO_ABORT;
+         sdo->data = SDO_ERR_INVIDX;
+      }
    }
    else if (sdo->index == SDO_INDEX_ERROR_NUM)
    {
@@ -280,12 +382,17 @@ bool CanSdo::ProcessSpecialSDOObjects(SdoFrame* sdo)
    {
       if (sdo->cmd == SDO_READ)
       {
-         sdo->data = 65535; //this should be the size of JSON but we don't know this in advance. Hmm.
+         #ifdef ARDUINO
+         Serial.printf("SDO UPLOAD INIT: jsonSize=%lu subIndex=%d dataSource=%p\r\n", 
+                       jsonSize, sdo->subIndex, dataSourceCallback);
+         #endif
+         sdo->data = jsonSize; // Use actual JSON size set by SetJsonSize()
          sdo->cmd = SDO_RESPONSE_UPLOAD | SDO_SIZE_SPECIFIED;
          printTimeout = PRINT_TIMEOUT;
          printByteIn = 0;
          printByteOut = sizeof(printBuffer); //both point to the beginning of the physical buffer but virtually they are 64 bytes apart
          printRequest = sdo->subIndex;
+         segmentOffset = 0;  // Reset offset for new transfer
          return true;
       }
    }

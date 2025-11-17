@@ -33,6 +33,13 @@ void CanHardwareArduino::Send(uint32_t canId, uint32_t data[2], uint8_t len)
 {
     CAN_FRAME frame;
     convertToCanFrame(canId, data, len, frame);
+
+    // Debug: Print outgoing CAN message
+    Serial.printf("CAN TX: 0x%03X [%d] %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+                  canId, len,
+                  frame.data.uint8[0], frame.data.uint8[1], frame.data.uint8[2], frame.data.uint8[3],
+                  frame.data.uint8[4], frame.data.uint8[5], frame.data.uint8[6], frame.data.uint8[7]);
+
     can->sendFrame(frame);
 }
 
