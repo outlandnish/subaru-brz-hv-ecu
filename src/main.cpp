@@ -52,6 +52,7 @@ String parameterJson;
 
 // Forward declarations
 void send_parameter_json();
+void dump_bcc_config(BatteryManagementSystem *bms);
 
 // Direct data source callback for JSON transfer - returns byte at offset or -1 if out of range
 int get_json_byte(uint32_t offset) {
@@ -73,10 +74,6 @@ void can_rx_task(void *pvParameters) {
     if (m3_can && m3_can->available()) {
       while (m3_can->read(frame)) {
         m3_read_count++;
-        Serial.printf("M3 RX: 0x%03X [%d] %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
-                      frame.id, frame.length,
-                      frame.data.uint8[0], frame.data.uint8[1], frame.data.uint8[2], frame.data.uint8[3],
-                      frame.data.uint8[4], frame.data.uint8[5], frame.data.uint8[6], frame.data.uint8[7]);
         xQueueSend(m3_can_queue, &frame, 0);
       }
     }
@@ -149,13 +146,9 @@ void build_parameter_json() {
     param["id"] = attr->id;  // Add parameter ID for SDO access
     param["isparam"] = (Param::GetType((Param::PARAM_NUM)i) == Param::TYPE_PARAM) ? 1 : 0;
     
-    // Format version as major.minor float for web interface
+    // Version is already stored as major.minor float
     if (strcmp(attr->name, "version") == 0) {
-      uint32_t ver = Param::GetInt((Param::PARAM_NUM)i);
-      uint8_t major = (ver >> 24) & 0xFF;
-      uint8_t minor = (ver >> 16) & 0xFF;
-      float version_float = major + (minor / 10.0f);  // e.g., 0.1 or 1.2
-      param["value"] = version_float;
+      param["value"] = Param::GetFloat((Param::PARAM_NUM)i);
     }
     // For other spot values, include current value
     else if (Param::GetType((Param::PARAM_NUM)i) == Param::TYPE_SPOTVALUE) {
@@ -250,6 +243,7 @@ void console_task(void *pvParameters) {
               Serial.println("bcc start             - Start charging");
               Serial.println("bcc stop              - Stop charging");
               Serial.println("bcc balance           - Force cell balancing");
+              Serial.println("bcc config dump       - Dump pack configuration registers");
               Serial.println("bcc voltages [summary]");
               Serial.println("                      - Show module voltage summary");
               Serial.println("bcc voltages <module#>");
@@ -331,6 +325,16 @@ void console_task(void *pvParameters) {
             } else {
               Serial.println();
               bms->stop_charging();
+              Serial.println();
+            }
+          }
+          else if (inputBuffer == "bcc config dump") {
+            if (!bms->is_bcc0_initialized() && !bms->is_bcc1_initialized()) {
+              Serial.println("\nError: No BCC initialized. Cannot dump configuration.\n");
+            } else {
+              Serial.println("\nDumping BCC configuration...");
+              Serial.println("Copy this configuration array to replace TAYCAN_CONFIG:\n");
+              dump_bcc_config(bms);
               Serial.println();
             }
           }
@@ -806,9 +810,9 @@ void console_task(void *pvParameters) {
 }
 
 void setup() {
-  delay(5000);
   // Initialize Serial FIRST
   Serial.begin(115200);
+  delay(2000);  // Wait for serial monitor to connect
   Serial.println("=== BMS Charging System for Dual 6S2P Packs ===");
   Serial.println();
 
@@ -817,19 +821,21 @@ void setup() {
   Param::LoadDefaults();
   int param_load_result = parm_load();
   if (param_load_result == 0) {
-    Serial.println("Parameters loaded from flash");
+    Serial.println("Parameters loaded from flash successfully!");
   } else {
     Serial.println("No saved parameters found, using defaults");
   }
 
-  // Set firmware version (store as raw integer)
-  Param::SetInt(Param::version, FIRMWARE_VERSION);
-  Serial.printf("Firmware version: 0x%08X (v%d.%d.%d.%d)\r\n",
+  // Set firmware version (store as major.minor float for web interface)
+  float version_float = FW_VERSION_MAJOR + (FW_VERSION_MINOR / 10.0f);
+  Param::SetFloat(Param::version, version_float);
+  Serial.printf("Firmware version: 0x%08X (v%d.%d.%d.%d) = %.1f\r\n",
                 FIRMWARE_VERSION,
                 FW_VERSION_MAJOR,
                 FW_VERSION_MINOR,
                 FW_VERSION_PATCH,
-                FW_VERSION_BUILD);
+                FW_VERSION_BUILD,
+                version_float);
 
   // Display STM32 unique device ID (used as serial number)
   Serial.printf("Device Serial: %08X-%08X-%08X\r\n",
@@ -840,29 +846,50 @@ void setup() {
 
   // Configure BCC hardware from parameters
   Serial.println("Configuring BCC hardware from parameters...");
+  Serial.printf("  bcc0DeviceCount (raw) = %d\r\n", Param::GetInt(Param::bcc0DeviceCount));
+  Serial.printf("  bcc0DeviceType (raw) = %d\r\n", Param::GetInt(Param::bcc0DeviceType));
+  Serial.printf("  bcc1DeviceCount (raw) = %d\r\n", Param::GetInt(Param::bcc1DeviceCount));
+  Serial.printf("  bcc1DeviceType (raw) = %d\r\n", Param::GetInt(Param::bcc1DeviceType));
+  Serial.println();
+
   bcc0_config.device_count = Param::GetInt(Param::bcc0DeviceCount);
-  bcc0_config.cell_count = Param::GetInt(Param::bcc0CellCount);
+  bcc0_config.device_type = (bcc_device_t)Param::GetInt(Param::bcc0DeviceType);
+  // Cell count is automatically determined by device type
+  bcc0_config.cell_count = (bcc0_config.device_type == BCC_DEVICE_MC33771) ? MC33771_MAX_CELLS : MC33772_MAX_CELLS;
   bcc0_config.enable_pin = BCC0_ENABLE;
   bcc0_config.intb_pin = BCC0_INTB;
   bcc0_config.cs_pin = BCC0_TX_CS;
   bcc0_config.loopback = false;
 
   bcc1_config.device_count = Param::GetInt(Param::bcc1DeviceCount);
-  bcc1_config.cell_count = Param::GetInt(Param::bcc1CellCount);
+  bcc1_config.device_type = (bcc_device_t)Param::GetInt(Param::bcc1DeviceType);
+  // Cell count is automatically determined by device type
+  bcc1_config.cell_count = (bcc1_config.device_type == BCC_DEVICE_MC33771) ? MC33771_MAX_CELLS : MC33772_MAX_CELLS;
   bcc1_config.enable_pin = BCC1_ENABLE;
   bcc1_config.intb_pin = BCC1_INTB;
   bcc1_config.cs_pin = BCC1_TX_CS;
   bcc1_config.loopback = false;
 
-  Serial.printf("  BCC0: %d devices x %d cells = %d total cells\r\n",
-                bcc0_config.device_count, bcc0_config.cell_count,
-                bcc0_config.device_count * bcc0_config.cell_count);
-  Serial.printf("  BCC1: %d devices x %d cells = %d total cells\r\n",
-                bcc1_config.device_count, bcc1_config.cell_count,
-                bcc1_config.device_count * bcc1_config.cell_count);
-  Serial.printf("  Total: %d cells\r\n",
-                (bcc0_config.device_count * bcc0_config.cell_count) +
-                (bcc1_config.device_count * bcc1_config.cell_count));
+  Serial.printf("  BCC0: %d x MC3377%d devices x %d cells = %d total cells%s\r\n",
+                bcc0_config.device_count,
+                bcc0_config.device_type == BCC_DEVICE_MC33771 ? 1 : 2,
+                bcc0_config.cell_count,
+                bcc0_config.device_count * bcc0_config.cell_count,
+                bcc0_config.device_count == 0 ? " (DISABLED)" : "");
+  Serial.printf("  BCC1: %d x MC3377%d devices x %d cells = %d total cells%s\r\n",
+                bcc1_config.device_count,
+                bcc1_config.device_type == BCC_DEVICE_MC33771 ? 1 : 2,
+                bcc1_config.cell_count,
+                bcc1_config.device_count * bcc1_config.cell_count,
+                bcc1_config.device_count == 0 ? " (DISABLED)" : "");
+
+  uint8_t total_cells = (bcc0_config.device_count * bcc0_config.cell_count) +
+                        (bcc1_config.device_count * bcc1_config.cell_count);
+  Serial.printf("  Total: %d cells\r\n", total_cells);
+
+  if (total_cells == 0) {
+    Serial.println("  ERROR: No BCC devices configured! System cannot operate.");
+  }
   Serial.println();
 
   // Initialize NeoPixel strip
@@ -1012,12 +1039,14 @@ void setup() {
   if (!bms->start_tasks()) {
     Serial.println("ERROR: Failed to start BMS tasks!");
     Serial.println("System halted.");
-    while (1) {
-      delay(1000);
-    }
   }
 
   Serial.println("BMS tasks started successfully!");
+  Serial.println();
+
+  // Read cell voltage limits from BCC hardware configuration
+  Serial.println("Reading pack voltage limits from BCC hardware...");
+  bms->read_and_set_voltage_limits();
   Serial.println();
 
   // Create CAN message queues
@@ -1141,6 +1170,86 @@ void setup() {
   // Should never reach here
   Serial.println("ERROR: Scheduler failed to start!");
   while (1);
+}
+
+// Dump BCC configuration registers from all connected modules
+void dump_bcc_config(BatteryManagementSystem *bms) {
+  // Register addresses to dump (configuration registers)
+  const uint8_t reg_addrs[] = {
+    0x03, 0x04, 0x05, 0x06, 0x07, 0x08,  // SYS_CFG1, SYS_CFG2, SYS_DIAG, ADC_CFG, ADC2_OFFSET_COMP, OV_UV_EN
+    0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,  // CB1-6_CFG
+    0x0F, 0x10, 0x11, 0x12, 0x13,        // GPIO_CFG1-2, FAULT_MASK1-3
+    0x14, 0x15, 0x16,                     // WAKEUP_MASK1-3
+    0x4B, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59,  // TH_ALL_CT, TH_CT6-1
+    0x5A, 0x5B, 0x5C, 0x5D, 0x5E, 0x5F, 0x60,  // TH_AN6-0_OT
+    0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67,  // TH_AN6-0_UT
+    0x68, 0x2E, 0x2F                           // TH_ISENSE_OC, TH_COULOMB_CNT_MSB/LSB
+  };
+
+  const char* reg_names[] = {
+    "SYS_CFG1", "SYS_CFG2", "SYS_DIAG", "ADC_CFG", "ADC2_OFFSET_COMP", "OV_UV_EN",
+    "CB1_CFG", "CB2_CFG", "CB3_CFG", "CB4_CFG", "CB5_CFG", "CB6_CFG",
+    "GPIO_CFG1", "GPIO_CFG2", "FAULT_MASK1", "FAULT_MASK2", "FAULT_MASK3",
+    "WAKEUP_MASK1", "WAKEUP_MASK2", "WAKEUP_MASK3",
+    "TH_ALL_CT", "TH_CT6", "TH_CT5", "TH_CT4", "TH_CT3", "TH_CT2", "TH_CT1",
+    "TH_AN6_OT", "TH_AN5_OT", "TH_AN4_OT", "TH_AN3_OT", "TH_AN2_OT", "TH_AN1_OT", "TH_AN0_OT",
+    "TH_AN6_UT", "TH_AN5_UT", "TH_AN4_UT", "TH_AN3_UT", "TH_AN2_UT", "TH_AN1_UT", "TH_AN0_UT",
+    "TH_ISENSE_OC", "TH_COULOMB_CNT_MSB", "TH_COULOMB_CNT_LSB"
+  };
+
+  const uint8_t num_regs = sizeof(reg_addrs) / sizeof(reg_addrs[0]);
+
+  Serial.println("\n=== CSV Format: BCC Configuration Dump ===");
+
+  // Print CSV header
+  Serial.print("BCC,CID");
+  for (uint8_t i = 0; i < num_regs; i++) {
+    Serial.print(",");
+    Serial.print(reg_names[i]);
+  }
+  Serial.println();
+
+  // Read and print configuration for each BCC chain and module
+  uint8_t bcc_configs[2] = {
+    bms->get_bcc0_total_cell_count() > 0 ? 1 : 0,  // BCC0 enabled?
+    bms->is_bcc1_enabled() ? 1 : 0                   // BCC1 enabled?
+  };
+
+  for (uint8_t bcc = 0; bcc < 2; bcc++) {
+    if (!bcc_configs[bcc]) continue;
+
+    // Get device count for this BCC chain
+    uint8_t device_count = (bcc == 0) ?
+      Param::GetInt(Param::bcc0DeviceCount) :
+      Param::GetInt(Param::bcc1DeviceCount);
+
+    // Read configuration from each module in the chain
+    for (uint8_t cid = 1; cid <= device_count; cid++) {
+      Serial.print(bcc);
+      Serial.print(",");
+      Serial.print(cid);
+
+      // Read each register
+      for (uint8_t i = 0; i < num_regs; i++) {
+        uint16_t value = 0;
+        bcc_status_t status = bms->read_bcc_register(bcc, (bcc_cid_t)cid, reg_addrs[i], &value);
+
+        Serial.print(",");
+        if (status == BCC_STATUS_SUCCESS) {
+          Serial.printf("0x%04X", value);
+        } else {
+          Serial.print("ERROR");
+        }
+      }
+      Serial.println();
+
+      // Small delay to avoid overwhelming the serial buffer
+      delay(10);
+    }
+  }
+
+  Serial.println("=== Dump Complete ===");
+  Serial.println("\nUse 'python3 capture_battery_data.py' to save this data to CSV file.");
 }
 
 void loop() {

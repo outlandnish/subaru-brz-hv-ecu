@@ -19,20 +19,17 @@
     PARAM_ENTRY("CAN", canNodeId, "", 1, 127, 22, 1) \
     \
     /* BCC Hardware Configuration */ \
-    PARAM_ENTRY("BCC", bcc0DeviceCount, "", 1, 15, 8, 10) \
-    PARAM_ENTRY("BCC", bcc0CellCount, "", 1, 14, 6, 11) \
-    PARAM_ENTRY("BCC", bcc1DeviceCount, "", 1, 15, 8, 12) \
-    PARAM_ENTRY("BCC", bcc1CellCount, "", 1, 14, 6, 13) \
+    PARAM_ENTRY("BCC", bcc0DeviceCount, "", 0, 15, 8, 10) \
+    PARAM_ENTRY("BCC", bcc0DeviceType, "0=MC33771, 1=MC33772", 0, 1, 1, 14) \
+    PARAM_ENTRY("BCC", bcc1DeviceCount, "", 0, 15, 8, 12) \
+    PARAM_ENTRY("BCC", bcc1DeviceType, "0=MC33771, 1=MC33772", 0, 1, 1, 15) \
     \
     /* Battery Protection Limits */ \
-    PARAM_ENTRY("Battery", cellVoltMin, "mV", 2500, 3500, 3000, 2) \
-    PARAM_ENTRY("Battery", cellVoltMax, "mV", 3500, 4300, 4200, 3) \
     PARAM_ENTRY("Battery", targetCellVolt, "mV", 3000, 4300, 3600, 4) \
     PARAM_ENTRY("Battery", batteryCapacity, "Ah", 10.0, 200.0, 50.0, 5) \
     PARAM_ENTRY("Battery", minSocPercent, "%", 0.0, 50.0, 10.0, 6) \
     PARAM_ENTRY("Battery", maxSocPercent, "%", 50.0, 100.0, 100.0, 7) \
     PARAM_ENTRY("Battery", initSocPercent, "%", 0.0, 100.0, 50.0, 8) \
-    PARAM_ENTRY("Battery", socMinVoltage, "mV", 2500, 3500, 3000, 9) \
     \
     /* Charging Configuration */ \
     PARAM_ENTRY("Charging", maxChargeCurrent, "A", 5.0, 200.0, 30.0, 20) \
@@ -52,14 +49,15 @@
     PARAM_ENTRY("Contactor", holdDuty, "%", 10, 80, 30, 42) \
     PARAM_ENTRY("Contactor", engageTime, "ms", 10, 500, 100, 43) \
     \
-    /* Filtering and Timing */ \
-    PARAM_ENTRY("Filter", voltageFilterAlpha, "", 0.01, 1.0, 0.2, 50) \
-    PARAM_ENTRY("Filter", commTimeout, "ms", 1000, 30000, 5000, 51) \
-    PARAM_ENTRY("Filter", faultCheckInt, "ms", 100, 30000, 5000, 52) \
+    /* Timing */ \
+    PARAM_ENTRY("Timing", commTimeout, "ms", 1000, 30000, 5000, 51) \
+    PARAM_ENTRY("Timing", faultCheckInt, "ms", 100, 30000, 5000, 52) \
     \
     /* Read-only spot values */ \
     VALUE_ENTRY(version, "", 1000) \
     VALUE_ENTRY(serialNumber, "", 999) \
+    VALUE_ENTRY(cellVoltMin, "mV", 2) \
+    VALUE_ENTRY(cellVoltMax, "mV", 3) \
     VALUE_ENTRY(packVoltage, "V", 1001) \
     VALUE_ENTRY(packVoltFilt, "V", 1002) \
     VALUE_ENTRY(packCurrent, "A", 1003) \

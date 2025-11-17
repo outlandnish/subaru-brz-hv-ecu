@@ -7,7 +7,7 @@ BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *co
   bcc0_config = config0;
   devices_0 = new bcc_device_t[config0->device_count];
   for (uint8_t i = 0; i < config0->device_count; i++) {
-    devices_0[i] = BCC_DEVICE_MC33772;
+    devices_0[i] = config0->device_type;
   }
 
   bcc0_tx_spi = new SPIClass(BCC0_TX_DATA, NC, BCC0_TX_SCK, NC);
@@ -17,16 +17,26 @@ BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *co
   bcc0 = new BatteryCellController(tpl0, devices_0, config0->device_count, config0->cell_count, config0->enable_pin, config0->intb_pin, config0->loopback);
 
   bcc1_config = config1;
-  devices_1 = new bcc_device_t[config1->device_count];
-  for (uint8_t i = 0; i < config1->device_count; i++) {
-    devices_1[i] = BCC_DEVICE_MC33772;
+
+  // Only create BCC1 objects if device count > 0
+  if (config1->device_count > 0) {
+    devices_1 = new bcc_device_t[config1->device_count];
+    for (uint8_t i = 0; i < config1->device_count; i++) {
+      devices_1[i] = config1->device_type;
+    }
+
+    bcc1_tx_spi = new SPIClass(BCC1_TX_DATA, NC, BCC1_TX_SCK, NC);
+    bcc1_rx_spi = new SPIClass(BCC1_RX_DATA, NC, BCC1_RX_SCK, BCC1_RX_CS);
+
+    tpl1 = new TPLSPI(bcc1_tx_spi, bcc1_rx_spi, config1->cs_pin, configureDMA_HV_ECU);
+    bcc1 = new BatteryCellController(tpl1, devices_1, config1->device_count, config1->cell_count, config1->enable_pin, config1->intb_pin, config1->loopback);
+  } else {
+    devices_1 = nullptr;
+    bcc1_tx_spi = nullptr;
+    bcc1_rx_spi = nullptr;
+    tpl1 = nullptr;
+    bcc1 = nullptr;
   }
-
-  bcc1_tx_spi = new SPIClass(BCC1_TX_DATA, NC, BCC1_TX_SCK, NC);
-  bcc1_rx_spi = new SPIClass(BCC1_RX_DATA, NC, BCC1_RX_SCK, BCC1_RX_CS);
-
-  tpl1 = new TPLSPI(bcc1_tx_spi, bcc1_rx_spi, config1->cs_pin, configureDMA_HV_ECU);
-  bcc1 = new BatteryCellController(tpl1, devices_1, config1->device_count, config1->cell_count, config1->enable_pin, config1->intb_pin, config1->loopback);
 
   current_state = BMS_Initialization;
   hv_state = HV_Disabled;
@@ -38,8 +48,6 @@ BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *co
   bcc0_initialized = false;
   bcc1_initialized = false;
   stack_voltage_uv = 0;
-  stack_voltage_filtered_uv = 0;
-  voltage_filter_alpha = Param::GetFloat(Param::voltageFilterAlpha);
   status_leds = nullptr;
   led_animation_step = 0;
   last_successful_measurement = 0;
@@ -60,7 +68,6 @@ BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *co
 
   // Initialize cell voltage and balancing arrays
   memset(cell_voltages_uv, 0, sizeof(cell_voltages_uv));
-  memset(cell_voltages_filtered_uv, 0, sizeof(cell_voltages_filtered_uv));
   memset(cells_to_balance, 0, sizeof(cells_to_balance));
 
   // Initialize fault tracking
@@ -93,6 +100,14 @@ BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *co
   positive_contactor_timer = nullptr;
   negative_contactor_timer = nullptr;
   contactors_use_pwm = false;
+
+  // Determine if BCC interfaces should be enabled based on device count
+  bcc1_enabled = (config1->device_count > 0);
+
+  Serial.printf("BMS: BCC0 enabled (%d devices), BCC1 %s (%d devices)\r\n",
+                config0->device_count,
+                bcc1_enabled ? "enabled" : "disabled",
+                config1->device_count);
 }
 
 bool BatteryManagementSystem::initialize(uint16_t device_configuration[][BCC_INIT_CONF_REG_CNT]) {
@@ -203,33 +218,45 @@ bool BatteryManagementSystem::start_tasks() {
   }
 
   // Create BCC0 monitor task
-  result = xTaskCreate(
-    bcc0_monitor_task_wrapper,
-    "BCC0_Monitor",
-    2048,
-    this,
-    2,
-    &bcc0_monitor_task_handle
-  );
+  if (bcc0_config->device_count > 0) {
+    result = xTaskCreate(
+      bcc0_monitor_task_wrapper,
+      "BCC0_Monitor",
+      2048,
+      this,
+      2,
+      &bcc0_monitor_task_handle
+    );
 
-  if (result != pdPASS) {
-    Serial.println("BMS: Failed to create BCC0 monitor task");
-    return false;
+    if (result != pdPASS) {
+      Serial.println("BMS: Failed to create BCC0 monitor task");
+      return false;
+    }
+    Serial.println("BMS: BCC0 monitor task created");
+  } else {
+    Serial.println("BMS: BCC0 disabled, skipping monitor task creation");
+    bcc0_monitor_task_handle = nullptr;
   }
 
-  // Create BCC1 monitor task
-  result = xTaskCreate(
-    bcc1_monitor_task_wrapper,
-    "BCC1_Monitor",
-    2048,
-    this,
-    2,
-    &bcc1_monitor_task_handle
-  );
+  // Create BCC1 monitor task (only if enabled)
+  if (bcc1_enabled) {
+    result = xTaskCreate(
+      bcc1_monitor_task_wrapper,
+      "BCC1_Monitor",
+      2048,
+      this,
+      2,
+      &bcc1_monitor_task_handle
+    );
 
-  if (result != pdPASS) {
-    Serial.println("BMS: Failed to create BCC1 monitor task");
-    return false;
+    if (result != pdPASS) {
+      Serial.println("BMS: Failed to create BCC1 monitor task");
+      return false;
+    }
+    Serial.println("BMS: BCC1 monitor task created");
+  } else {
+    Serial.println("BMS: BCC1 disabled, skipping monitor task creation");
+    bcc1_monitor_task_handle = nullptr;
   }
 
   // Create HV CAN task
@@ -293,7 +320,7 @@ void BatteryManagementSystem::master_task_loop() {
 
       // Update CHAdeMO with current battery status
       uint8_t soc = get_soc();  // Get actual SOC from coulomb counting
-      uint16_t current_voltage = stack_voltage_filtered_uv / 1000000;  // Convert uV to V
+      uint16_t current_voltage = stack_voltage_uv / 1000000;  // Convert uV to V
       uint16_t requested_current = calculate_safe_charge_current();  // Calculate based on cell conditions
 
       chademo->update_battery_status(current_voltage, soc, requested_current);
@@ -302,7 +329,7 @@ void BatteryManagementSystem::master_task_loop() {
       if (chademo->is_charging() && current_state == BMS_Charging) {
         // Active charging - update current request dynamically
         uint16_t new_current = calculate_safe_charge_current();
-        if (new_current == 0 || has_reached_target_voltage(cell_voltages_filtered_uv, bcc0_config->cell_count)) {
+        if (new_current == 0 || has_reached_target_voltage(cell_voltages_uv, bcc0_config->cell_count)) {
           // Stop charging if current reaches 0 or target voltage reached
           Serial.println("BMS: Charge complete or current limit reached");
           stop_chademo_charging();
@@ -337,7 +364,7 @@ void BatteryManagementSystem::master_task_loop() {
 
       case BMS_Charging: {
         // Use filtered voltages for decision making to avoid noise-induced state changes
-        if (has_reached_target_voltage(cell_voltages_filtered_uv, bcc0_config->cell_count)) {
+        if (has_reached_target_voltage(cell_voltages_uv, bcc0_config->cell_count)) {
           Serial.println("BMS: Target voltage reached!");
           hv_disconnect();
           current_state = BMS_Idle;
@@ -345,7 +372,7 @@ void BatteryManagementSystem::master_task_loop() {
         }
 
         // Check cell voltage difference using filtered values
-        float max_diff_mv = get_max_cell_voltage_diff_mv(cell_voltages_filtered_uv, bcc0_config->cell_count);
+        float max_diff_mv = get_max_cell_voltage_diff_mv(cell_voltages_uv, bcc0_config->cell_count);
 
         if (max_diff_mv > charging_config.balance_threshold_mv) {
           Serial.printf("BMS: Cell imbalance detected: %.2f mV (threshold: %.2f mV)\r\n",
@@ -354,7 +381,7 @@ void BatteryManagementSystem::master_task_loop() {
           current_state = BMS_CellBalancing;
 
           // Calculate which cells need balancing using filtered voltages
-          calculate_cell_balance_requirements(cell_voltages_filtered_uv, bcc0_config->cell_count, cells_to_balance);
+          calculate_cell_balance_requirements(cell_voltages_uv, bcc0_config->cell_count, cells_to_balance);
           apply_cell_balancing(bcc0, cells_to_balance, bcc0_config->cell_count);
         }
         break;
@@ -362,7 +389,7 @@ void BatteryManagementSystem::master_task_loop() {
 
       case BMS_CellBalancing: {
         // Check if cells are balanced enough to resume charging (using filtered values)
-        float max_diff_mv = get_max_cell_voltage_diff_mv(cell_voltages_filtered_uv, bcc0_config->cell_count);
+        float max_diff_mv = get_max_cell_voltage_diff_mv(cell_voltages_uv, bcc0_config->cell_count);
 
         if (max_diff_mv <= charging_config.balance_target_mv) {
           Serial.printf("BMS: Cells balanced: %.2f mV (target: %.2f mV)\r\n",
@@ -401,7 +428,6 @@ void BatteryManagementSystem::bcc0_monitor_task_loop() {
   // Perform hardware initialization here (after scheduler starts)
   if (!hardware_initialized) {
     Serial.println("BCC0: Initializing...");
-    vTaskDelay(pdMS_TO_TICKS(2000)); // Wait for system to stabilize
 
     pinMode(bcc0_config->cs_pin, OUTPUT);
     digitalWrite(bcc0_config->cs_pin, HIGH);
@@ -433,8 +459,7 @@ void BatteryManagementSystem::bcc0_monitor_task_loop() {
           communication_lost = false;
         }
 
-        // Apply exponential filter to smooth measurements
-        apply_exponential_filter();
+        // Voltage filtering removed - using raw measurements directly
       } else {
         // Failed measurement - check for timeout
         if (!communication_lost && last_successful_measurement > 0) {
@@ -498,19 +523,7 @@ void BatteryManagementSystem::bcc1_monitor_task_loop() {
           cell_voltages_uv[CELL_OFFSET + i] = bcc1_cell_voltages[i];
         }
 
-        // Apply exponential filter for BCC1 cells
-        for (uint8_t i = 0; i < bcc1_config->cell_count; i++) {
-          uint8_t idx = CELL_OFFSET + i;
-          if (cell_voltages_filtered_uv[idx] == 0) {
-            // First measurement - initialize filter
-            cell_voltages_filtered_uv[idx] = cell_voltages_uv[idx];
-          } else {
-            // Apply exponential filter
-            cell_voltages_filtered_uv[idx] =
-              (uint32_t)(voltage_filter_alpha * cell_voltages_uv[idx] +
-                        (1.0f - voltage_filter_alpha) * cell_voltages_filtered_uv[idx]);
-          }
-        }
+        // Voltage filtering removed - using raw measurements directly
       }
     }
 
@@ -552,35 +565,6 @@ bool BatteryManagementSystem::measure_stack_voltage(BatteryCellController *bcc, 
   return (error == BCC_STATUS_SUCCESS);
 }
 
-void BatteryManagementSystem::apply_exponential_filter() {
-  // Apply exponential filter: filtered = alpha * new + (1 - alpha) * old
-  // Alpha closer to 1 = less filtering (faster response)
-  // Alpha closer to 0 = more filtering (smoother but slower response)
-
-  // Filter stack voltage
-  if (stack_voltage_filtered_uv == 0) {
-    // First measurement - initialize filter with raw value
-    stack_voltage_filtered_uv = stack_voltage_uv;
-  } else {
-    stack_voltage_filtered_uv = (uint32_t)(
-      voltage_filter_alpha * stack_voltage_uv +
-      (1.0f - voltage_filter_alpha) * stack_voltage_filtered_uv
-    );
-  }
-
-  // Filter each cell voltage
-  for (uint8_t i = 0; i < bcc0_config->cell_count; i++) {
-    if (cell_voltages_filtered_uv[i] == 0) {
-      // First measurement - initialize filter with raw value
-      cell_voltages_filtered_uv[i] = cell_voltages_uv[i];
-    } else {
-      cell_voltages_filtered_uv[i] = (uint32_t)(
-        voltage_filter_alpha * cell_voltages_uv[i] +
-        (1.0f - voltage_filter_alpha) * cell_voltages_filtered_uv[i]
-      );
-    }
-  }
-}
 
 bool BatteryManagementSystem::read_fault_status(BatteryCellController *bcc) {
   bcc_status_t error = bcc->get_fault_status(BCC_CID_DEV1, fault_status);
@@ -990,18 +974,50 @@ void BatteryManagementSystem::get_cell_voltages(uint32_t *voltages, uint8_t *cou
 void BatteryManagementSystem::get_cell_voltages_filtered(uint32_t *voltages, uint8_t *count) {
   uint8_t total_cells = bcc0_config->cell_count + bcc1_config->cell_count;
   *count = total_cells;
-  memcpy(voltages, cell_voltages_filtered_uv, total_cells * sizeof(uint32_t));
+  memcpy(voltages, cell_voltages_uv, total_cells * sizeof(uint32_t));
 }
 
-void BatteryManagementSystem::set_voltage_filter_alpha(float alpha) {
-  // Clamp alpha to valid range [0.01, 1.0]
-  if (alpha < 0.01f) alpha = 0.01f;
-  if (alpha > 1.0f) alpha = 1.0f;
-  voltage_filter_alpha = alpha;
-}
 
 void BatteryManagementSystem::get_fault_status(uint16_t *faults) {
   memcpy(faults, fault_status, sizeof(fault_status));
+}
+
+void BatteryManagementSystem::read_and_set_voltage_limits() {
+  uint16_t min_mv = 0, max_mv = 0;
+
+  // Read from BCC0 (always present)
+  uint16_t th_all_ct = 0;
+  bcc_status_t status = bcc0->read_register(BCC_CID_DEV1, 0x4B, 1, &th_all_ct);
+
+  if (status == BCC_STATUS_SUCCESS) {
+    // Decode thresholds using MC33772 formula: voltage_mv = (value * 195) / 10
+    uint8_t uv_threshold = (th_all_ct & 0x00FF);       // Lower 8 bits
+    uint8_t ov_threshold = (th_all_ct & 0xFF00) >> 8;  // Upper 8 bits
+
+    min_mv = (uv_threshold * 195) / 10;  // Undervoltage threshold
+    max_mv = (ov_threshold * 195) / 10;  // Overvoltage threshold
+
+    Serial.printf("Pack voltage limits from BCC hardware: min=%.3fV (0x%02X), max=%.3fV (0x%02X)\r\n",
+                  min_mv / 1000.0f, uv_threshold, max_mv / 1000.0f, ov_threshold);
+  } else {
+    // Fallback to safe defaults if read fails
+    min_mv = 2500;  // 2.5V
+    max_mv = 4200;  // 4.2V
+    Serial.println("WARNING: Could not read voltage limits from BCC, using defaults");
+  }
+
+  // Set as spot values
+  Param::SetFloat(Param::cellVoltMin, min_mv);
+  Param::SetFloat(Param::cellVoltMax, max_mv);
+}
+
+bcc_status_t BatteryManagementSystem::read_bcc_register(uint8_t bcc_num, bcc_cid_t cid, uint8_t reg_addr, uint16_t *value) {
+  if (bcc_num == 0 && bcc0) {
+    return bcc0->read_register(cid, reg_addr, 1, value);
+  } else if (bcc_num == 1 && bcc1 && bcc1_enabled) {
+    return bcc1->read_register(cid, reg_addr, 1, value);
+  }
+  return BCC_STATUS_PARAM_RANGE;
 }
 
 bool BatteryManagementSystem::has_faults() const {
@@ -1450,7 +1466,7 @@ void BatteryManagementSystem::update_status_leds() {
 
     case BMS_Charging:
       // Check if we're close to target using filtered voltages
-      if (has_reached_target_voltage(cell_voltages_filtered_uv, bcc0_config->cell_count)) {
+      if (has_reached_target_voltage(cell_voltages_uv, bcc0_config->cell_count)) {
         led_pattern_complete();
       } else {
         led_pattern_charging();
@@ -1493,12 +1509,12 @@ void BatteryManagementSystem::initialize_soc_from_voltage() {
 
   uint32_t total_voltage = 0;
   for (uint8_t i = 0; i < cell_count; i++) {
-    total_voltage += cell_voltages_filtered_uv[i];
+    total_voltage += cell_voltages_uv[i];
   }
   float avg_cell_voltage = total_voltage / (float)cell_count / 1000000.0f;  // Convert to volts
 
-  // NMC voltage mapping: socMinVoltage = 0%, target voltage = 100%
-  float min_voltage = Param::GetFloat(Param::socMinVoltage) / 1000.0f;  // Convert mV to V
+  // NMC voltage mapping: cellVoltMin = 0% SOC, target voltage = 100% SOC
+  float min_voltage = Param::GetFloat(Param::cellVoltMin) / 1000.0f;  // Convert mV to V
   float max_voltage = charging_config.target_cell_voltage;
 
   current_soc_percent = ((avg_cell_voltage - min_voltage) / (max_voltage - min_voltage)) * 100.0f;
@@ -1578,7 +1594,7 @@ uint16_t BatteryManagementSystem::calculate_safe_charge_current() const {
   float max_current = charging_config.max_charge_current_a;
 
   // Factor 1: Cell voltage imbalance - reduce current if cells are imbalanced
-  float max_diff_mv = get_max_cell_voltage_diff_mv(cell_voltages_filtered_uv, bcc0_config->cell_count);
+  float max_diff_mv = get_max_cell_voltage_diff_mv(cell_voltages_uv, bcc0_config->cell_count);
   if (max_diff_mv > charging_config.balance_threshold_mv) {
     // Reduce current proportionally to imbalance
     float reduction_factor = 1.0f - (max_diff_mv - charging_config.balance_threshold_mv) / 100.0f;
@@ -1591,7 +1607,7 @@ uint16_t BatteryManagementSystem::calculate_safe_charge_current() const {
   if (cell_count > 0) {
     uint32_t total_voltage = 0;
     for (uint8_t i = 0; i < cell_count; i++) {
-      total_voltage += cell_voltages_filtered_uv[i];
+      total_voltage += cell_voltages_uv[i];
     }
     float avg_cell_voltage = total_voltage / (float)cell_count / 1000000.0f;
     float target_voltage = charging_config.target_cell_voltage;
@@ -1733,7 +1749,7 @@ void BatteryManagementSystem::hv_can_task_loop() {
       data[1] = static_cast<uint8_t>(current_state);
 
       // Byte 2-3: Stack voltage in 0.1V units (e.g., 240 = 24.0V)
-      uint16_t stack_voltage_dv = static_cast<uint16_t>(stack_voltage_filtered_uv / 100000);  // Convert uV to 0.1V
+      uint16_t stack_voltage_dv = static_cast<uint16_t>(stack_voltage_uv / 100000);  // Convert uV to 0.1V
       data[2] = (stack_voltage_dv >> 8) & 0xFF;  // MSB
       data[3] = stack_voltage_dv & 0xFF;         // LSB
 
@@ -1765,7 +1781,7 @@ void BatteryManagementSystem::hv_can_task_loop() {
 void BatteryManagementSystem::update_spot_values() {
   // Pack voltages (convert uV to V)
   Param::SetFloat(Param::packVoltage, stack_voltage_uv / 1000000.0f);
-  Param::SetFloat(Param::packVoltFilt, stack_voltage_filtered_uv / 1000000.0f);
+  Param::SetFloat(Param::packVoltFilt, stack_voltage_uv / 1000000.0f);
 
   // Pack current from IVT shunt
   if (ivt_shunt && ivt_shunt->is_alive()) {
@@ -1785,15 +1801,15 @@ void BatteryManagementSystem::update_spot_values() {
   // Cell voltage statistics
   uint8_t cell_count = bcc0_config->cell_count + bcc1_config->cell_count;
   if (cell_count > 0) {
-    uint32_t min_cell_uv = cell_voltages_filtered_uv[0];
-    uint32_t max_cell_uv = cell_voltages_filtered_uv[0];
+    uint32_t min_cell_uv = cell_voltages_uv[0];
+    uint32_t max_cell_uv = cell_voltages_uv[0];
 
     for (uint8_t i = 1; i < cell_count; i++) {
-      if (cell_voltages_filtered_uv[i] < min_cell_uv) {
-        min_cell_uv = cell_voltages_filtered_uv[i];
+      if (cell_voltages_uv[i] < min_cell_uv) {
+        min_cell_uv = cell_voltages_uv[i];
       }
-      if (cell_voltages_filtered_uv[i] > max_cell_uv) {
-        max_cell_uv = cell_voltages_filtered_uv[i];
+      if (cell_voltages_uv[i] > max_cell_uv) {
+        max_cell_uv = cell_voltages_uv[i];
       }
     }
 

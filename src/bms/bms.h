@@ -46,6 +46,7 @@ enum BMS_State : uint8_t {
 struct BatteryCellControllerConfig{
   uint8_t device_count;
   uint8_t cell_count;
+  bcc_device_t device_type;  // Device type for all devices in this chain (MC33771 or MC33772)
   bcc_device_t devices[BCC_DEVICE_CNT_MAX];
   uint8_t enable_pin;
   uint8_t intb_pin;
@@ -86,12 +87,9 @@ class BatteryManagementSystem {
   BMSChargingConfig charging_config;
   HVConnectionConfig hv_config;
 
-  // Cell voltage tracking (raw and filtered)
-  uint32_t cell_voltages_uv[BCC_MAX_CELLS];           // Raw measurements
-  uint32_t cell_voltages_filtered_uv[BCC_MAX_CELLS];  // Exponentially filtered
-  uint32_t stack_voltage_uv;                          // Raw measurement
-  uint32_t stack_voltage_filtered_uv;                 // Exponentially filtered
-  float voltage_filter_alpha;                         // Exponential filter coefficient (0-1)
+  // Cell voltage tracking
+  uint32_t cell_voltages_uv[BCC_MAX_CELLS];           // Cell voltage measurements
+  uint32_t stack_voltage_uv;                          // Stack voltage measurement
   uint8_t cells_to_balance[BCC_MAX_CELLS];
 
   // Fault status tracking
@@ -165,7 +163,6 @@ class BatteryManagementSystem {
 
   bool measure_cell_voltages(BatteryCellController *bcc, uint32_t *cell_voltages);
   bool measure_stack_voltage(BatteryCellController *bcc, uint32_t *stack_voltage);
-  void apply_exponential_filter();
   bool read_fault_status(BatteryCellController *bcc);
   void check_faults();
   void calculate_cell_balance_requirements(uint32_t *cell_voltages, uint8_t cell_count,
@@ -227,6 +224,12 @@ class BatteryManagementSystem {
     // Start the BMS tasks
     bool start_tasks();
 
+    // Read cell voltage limits from BCC hardware and set as spot values
+    void read_and_set_voltage_limits();
+
+    // Read BCC register for config dumping
+    bcc_status_t read_bcc_register(uint8_t bcc_num, bcc_cid_t cid, uint8_t reg_addr, uint16_t *value);
+
     // HV operation control
     void start_charging();      // Start charging mode (precharge + charging)
     void start_drive_mode();    // Start drive mode (precharge + DCDC only)
@@ -243,10 +246,8 @@ class BatteryManagementSystem {
     bool is_bcc1_initialized() const { return bcc1_initialized; }
     bool is_bcc1_enabled() const { return bcc1_enabled; }
     void get_cell_voltages(uint32_t *voltages, uint8_t *count);
-    void get_cell_voltages_filtered(uint32_t *voltages, uint8_t *count);
+    void get_cell_voltages_filtered(uint32_t *voltages, uint8_t *count);  // Kept for compatibility (returns raw values)
     uint32_t get_stack_voltage() const { return stack_voltage_uv; }
-    uint32_t get_stack_voltage_filtered() const { return stack_voltage_filtered_uv; }
-    void set_voltage_filter_alpha(float alpha);
     void get_fault_status(uint16_t *faults);
     bool has_faults() const;
 

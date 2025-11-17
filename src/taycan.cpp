@@ -101,3 +101,24 @@ Reading all configuration from battery...
   | TH_COULOMB_CNT_LSB | 0x0000 |
   -------------------------------
 */
+
+// Read cell voltage limits from BCC hardware threshold registers
+void read_pack_voltage_limits(BatteryCellController *bcc, uint16_t *min_mv, uint16_t *max_mv) {
+  uint16_t th_all_ct = 0;
+
+  // Read TH_ALL_CT register (0x4B) which contains OV/UV thresholds
+  bcc_status_t status = bcc->read_register(BCC_CID_DEV1, 0x4B, 1, &th_all_ct);
+
+  if (status == BCC_STATUS_SUCCESS) {
+    // Decode thresholds using MC33772 formula: voltage_mv = (value * 195) / 10
+    uint8_t uv_threshold = (th_all_ct & 0x00FF);       // Lower 8 bits
+    uint8_t ov_threshold = (th_all_ct & 0xFF00) >> 8;  // Upper 8 bits
+
+    *min_mv = (uv_threshold * 195) / 10;  // Undervoltage threshold
+    *max_mv = (ov_threshold * 195) / 10;  // Overvoltage threshold
+  } else {
+    // Fallback to safe defaults if read fails
+    *min_mv = 2500;  // 2.5V
+    *max_mv = 4200;  // 4.2V
+  }
+}
