@@ -49,7 +49,6 @@ BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *co
   // Initialize IVT and CHAdeMO pointers
   ivt_shunt = nullptr;
   chademo = nullptr;
-  ipc_can = nullptr;
   m3_can = nullptr;
   hv_can = nullptr;
 
@@ -75,7 +74,7 @@ BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *co
   fault_check_interval_ms = Param::GetInt(Param::faultCheckInt);
 
   // Load charging config from parameters
-  charging_config.target_cell_voltage = Param::GetFloat(Param::targetCellVolt);
+  charging_config.target_cell_voltage = Param::GetFloat(Param::targetCellVolt) / 1000.0f;  // Convert mV to V
   charging_config.balance_threshold_mv = Param::GetFloat(Param::balanceThreshold);
   charging_config.balance_target_mv = Param::GetFloat(Param::balanceTarget);
   charging_config.balancing_timer_min = Param::GetInt(Param::balanceTimerMin);
@@ -180,8 +179,7 @@ void BatteryManagementSystem::set_chademo(CHAdeMOController *chademo_controller)
   chademo = chademo_controller;
 }
 
-void BatteryManagementSystem::set_can_buses(CANBus *ipc_can_bus, CANBus *m3_can_bus, CANBus *hv_can_bus) {
-  ipc_can = ipc_can_bus;
+void BatteryManagementSystem::set_can_buses(CANBus *m3_can_bus, CANBus *hv_can_bus) {
   m3_can = m3_can_bus;
   hv_can = hv_can_bus;
 }
@@ -1500,7 +1498,7 @@ void BatteryManagementSystem::initialize_soc_from_voltage() {
   float avg_cell_voltage = total_voltage / (float)cell_count / 1000000.0f;  // Convert to volts
 
   // NMC voltage mapping: socMinVoltage = 0%, target voltage = 100%
-  float min_voltage = Param::GetFloat(Param::socMinVoltage);
+  float min_voltage = Param::GetFloat(Param::socMinVoltage) / 1000.0f;  // Convert mV to V
   float max_voltage = charging_config.target_cell_voltage;
 
   current_soc_percent = ((avg_cell_voltage - min_voltage) / (max_voltage - min_voltage)) * 100.0f;

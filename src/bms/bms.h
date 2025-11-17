@@ -144,7 +144,6 @@ class BatteryManagementSystem {
   bool soc_initialized;                // Whether SOC has been initialized
 
   // CAN buses
-  CANBus *ipc_can;
   CANBus *m3_can;  // Also used for CHAdeMO (CP CAN)
   CANBus *hv_can;
 
@@ -223,7 +222,7 @@ class BatteryManagementSystem {
     // IVT and CHAdeMO configuration
     void set_ivt_shunt(IVTShunt *shunt);
     void set_chademo(CHAdeMOController *chademo_controller);
-    void set_can_buses(CANBus *ipc_can_bus, CANBus *m3_can_bus, CANBus *hv_can_bus);
+    void set_can_buses(CANBus *m3_can_bus, CANBus *hv_can_bus);
 
     // Start the BMS tasks
     bool start_tasks();
