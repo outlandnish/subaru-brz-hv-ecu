@@ -14,16 +14,13 @@ IVTShunt::IVTShunt()
     kwh(0.0),
     frame_count(0),
     last_message_time(0),
-    debug_enabled(false),
+    debug_enabled(true),
     first_frame(true),
     previous_as(0),
     previous_wh(0) {
 }
 
 IVTShunt::~IVTShunt() {
-  if (can) {
-    can->detachObj(this);
-  }
 }
 
 void IVTShunt::begin(CANBus *can_bus) {
@@ -34,15 +31,10 @@ void IVTShunt::begin(CANBus *can_bus) {
     return;
   }
 
-  // Attach this listener to the CAN bus
-  can->attachObj(this);
-
-  // Set filter to receive IVT messages (0x520-0x528)
-  can->watchFor(0x520, 0x7F0);  // Match 0x520-0x52F
-
   Serial.println("IVT: Initialized");
 
   // Initialize the shunt to current measurement mode
+  // set_defaults();
   init_current_mode();
 }
 
@@ -100,71 +92,78 @@ void IVTShunt::gotFrame(CAN_FRAME *frame, int mailbox) {
 }
 
 void IVTShunt::handle_0x521_current(CAN_FRAME *frame) {
-  // Current in milliamps (32-bit signed)
-  int32_t milliamps = (int32_t)((frame->data.uint8[5] << 24) |
-                                 (frame->data.uint8[4] << 16) |
-                                 (frame->data.uint8[3] << 8) |
-                                 (frame->data.uint8[2]));
+  // Current in milliamps (32-bit signed, big-endian)
+  // Byte 0: MuxID, Byte 1: counter/status, Bytes 2-5: value (big-endian)
+  int32_t milliamps = (int32_t)((frame->data.uint8[2] << 24) |
+                                 (frame->data.uint8[3] << 16) |
+                                 (frame->data.uint8[4] << 8) |
+                                 (frame->data.uint8[5]));
 
   current_amps = milliamps / 1000.0f;
 }
 
 void IVTShunt::handle_0x522_voltage(CAN_FRAME *frame) {
-  // Voltage in millivolts (32-bit signed)
-  int32_t millivolts = (int32_t)((frame->data.uint8[5] << 24) |
-                                  (frame->data.uint8[4] << 16) |
-                                  (frame->data.uint8[3] << 8) |
-                                  (frame->data.uint8[2]));
+  // Voltage in millivolts (32-bit signed, big-endian)
+  // Byte 0: MuxID, Byte 1: counter/status, Bytes 2-5: value (big-endian)
+  int32_t millivolts = (int32_t)((frame->data.uint8[2] << 24) |
+                                  (frame->data.uint8[3] << 16) |
+                                  (frame->data.uint8[4] << 8) |
+                                  (frame->data.uint8[5]));
 
   voltage = millivolts / 1000.0f;
 }
 
 void IVTShunt::handle_0x523_voltage2(CAN_FRAME *frame) {
-  // Voltage 2 in millivolts (32-bit signed)
-  int32_t millivolts = (int32_t)((frame->data.uint8[5] << 24) |
-                                  (frame->data.uint8[4] << 16) |
-                                  (frame->data.uint8[3] << 8) |
-                                  (frame->data.uint8[2]));
+  // Voltage 2 in millivolts (32-bit signed, big-endian)
+  // Byte 0: MuxID, Byte 1: counter/status, Bytes 2-5: value (big-endian)
+  int32_t millivolts = (int32_t)((frame->data.uint8[2] << 24) |
+                                  (frame->data.uint8[3] << 16) |
+                                  (frame->data.uint8[4] << 8) |
+                                  (frame->data.uint8[5]));
 
   voltage2 = millivolts / 1000.0f;
 }
 
 void IVTShunt::handle_0x524_voltage3(CAN_FRAME *frame) {
-  // Voltage 3 in millivolts (32-bit signed)
-  int32_t millivolts = (int32_t)((frame->data.uint8[5] << 24) |
-                                  (frame->data.uint8[4] << 16) |
-                                  (frame->data.uint8[3] << 8) |
-                                  (frame->data.uint8[2]));
+  // Voltage 3 in millivolts (32-bit signed, big-endian)
+  // Byte 0: MuxID, Byte 1: counter/status, Bytes 2-5: value (big-endian)
+  int32_t millivolts = (int32_t)((frame->data.uint8[2] << 24) |
+                                  (frame->data.uint8[3] << 16) |
+                                  (frame->data.uint8[4] << 8) |
+                                  (frame->data.uint8[5]));
 
   voltage3 = millivolts / 1000.0f;
 }
 
 void IVTShunt::handle_0x525_temperature(CAN_FRAME *frame) {
-  // Temperature in deci-degrees C (32-bit signed)
-  int32_t deci_degrees = (int32_t)((frame->data.uint8[5] << 24) |
-                                    (frame->data.uint8[4] << 16) |
-                                    (frame->data.uint8[3] << 8) |
-                                    (frame->data.uint8[2]));
+  // Temperature in deci-degrees C (32-bit signed, big-endian)
+  // Byte 0: MuxID, Byte 1: counter/status, Bytes 2-5: value (big-endian)
+  int32_t deci_degrees = (int32_t)((frame->data.uint8[2] << 24) |
+                                    (frame->data.uint8[3] << 16) |
+                                    (frame->data.uint8[4] << 8) |
+                                    (frame->data.uint8[5]));
 
   temperature_c = deci_degrees / 10.0f;
 }
 
 void IVTShunt::handle_0x526_power(CAN_FRAME *frame) {
-  // Power in watts (32-bit signed)
-  int32_t watts = (int32_t)((frame->data.uint8[5] << 24) |
-                             (frame->data.uint8[4] << 16) |
-                             (frame->data.uint8[3] << 8) |
-                             (frame->data.uint8[2]));
+  // Power in watts (32-bit signed, big-endian)
+  // Byte 0: MuxID, Byte 1: counter/status, Bytes 2-5: value (big-endian)
+  int32_t watts = (int32_t)((frame->data.uint8[2] << 24) |
+                             (frame->data.uint8[3] << 16) |
+                             (frame->data.uint8[4] << 8) |
+                             (frame->data.uint8[5]));
 
   power_kw = watts / 1000.0f;
 }
 
 void IVTShunt::handle_0x527_amphours(CAN_FRAME *frame) {
-  // Ampere-seconds (32-bit signed)
-  int32_t as = (int32_t)((frame->data.uint8[5] << 24) |
-                          (frame->data.uint8[4] << 16) |
-                          (frame->data.uint8[3] << 8) |
-                          (frame->data.uint8[2]));
+  // Ampere-seconds (32-bit signed, big-endian)
+  // Byte 0: MuxID, Byte 1: counter/status, Bytes 2-5: value (big-endian)
+  int32_t as = (int32_t)((frame->data.uint8[2] << 24) |
+                          (frame->data.uint8[3] << 16) |
+                          (frame->data.uint8[4] << 8) |
+                          (frame->data.uint8[5]));
 
   // Calculate delta and accumulate (convert As to Ah)
   if (!first_frame) {
@@ -175,11 +174,12 @@ void IVTShunt::handle_0x527_amphours(CAN_FRAME *frame) {
 }
 
 void IVTShunt::handle_0x528_kwh(CAN_FRAME *frame) {
-  // Watt-hours (32-bit signed)
-  int32_t wh = (int32_t)((frame->data.uint8[5] << 24) |
-                          (frame->data.uint8[4] << 16) |
-                          (frame->data.uint8[3] << 8) |
-                          (frame->data.uint8[2]));
+  // Watt-hours (32-bit signed, big-endian)
+  // Byte 0: MuxID, Byte 1: counter/status, Bytes 2-5: value (big-endian)
+  int32_t wh = (int32_t)((frame->data.uint8[2] << 24) |
+                          (frame->data.uint8[3] << 16) |
+                          (frame->data.uint8[4] << 8) |
+                          (frame->data.uint8[5]));
 
   // Calculate delta and accumulate (convert Wh to kWh)
   if (previous_wh != 0) {
@@ -190,17 +190,20 @@ void IVTShunt::handle_0x528_kwh(CAN_FRAME *frame) {
 
 void IVTShunt::start() {
   Serial.println("IVT: Sending START command");
-  send_command(0x34, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00);
+  const uint8_t cmd[] = {0x34, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00};
+  send_command(cmd);
 }
 
 void IVTShunt::stop() {
   Serial.println("IVT: Sending STOP command");
-  send_command(0x34, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00);
+  const uint8_t cmd[] = {0x34, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00};
+  send_command(cmd);
 }
 
 void IVTShunt::restart() {
   Serial.println("IVT: Sending RESTART command (resets Ah/kWh)");
-  send_command(0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00);
+  const uint8_t cmd[] = {0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+  send_command(cmd);
 
   // Reset local accumulators
   amp_hours = 0.0;
@@ -210,13 +213,15 @@ void IVTShunt::restart() {
   first_frame = true;
 }
 
-void IVTShunt::setDefaults() {
+void IVTShunt::set_defaults() {
   Serial.println("IVT: Sending DEFAULT command");
-  send_command(0x3D, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00);
+  const uint8_t cmd[] = {0x3D, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+  send_command(cmd);
 }
 
 void IVTShunt::send_store() {
-  send_command(0x32, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00);
+  const uint8_t cmd[] = {0x32, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+  send_command(cmd);
 }
 
 void IVTShunt::init_current_mode() {
@@ -226,7 +231,8 @@ void IVTShunt::init_current_mode() {
   delay(500);
 
   // Configure current mode
-  send_command(0x21, 0x42, 0x01, 0x61, 0x00, 0x00, 0x00, 0x00);
+  const uint8_t config_cmd[] = {0x21, 0x42, 0x01, 0x61, 0x00, 0x00, 0x00, 0x00};
+  send_command(config_cmd);
   delay(500);
 
   send_store();
@@ -238,23 +244,24 @@ void IVTShunt::init_current_mode() {
   Serial.println("IVT: Initialization complete");
 }
 
-void IVTShunt::send_command(uint8_t cmd, uint8_t b1, uint8_t b2, uint8_t b3,
-                             uint8_t b4, uint8_t b5, uint8_t b6, uint8_t b7) {
+void IVTShunt::send_command(const uint8_t data[8]) {
   if (!can) return;
-
   CAN_FRAME frame;
   frame.id = 0x411;
   frame.extended = 0;
-  frame.rtr = 1;
+  frame.rtr = 0;  // Data frame, not remote frame
   frame.length = 8;
-  frame.data.uint8[0] = cmd;
-  frame.data.uint8[1] = b1;
-  frame.data.uint8[2] = b2;
-  frame.data.uint8[3] = b3;
-  frame.data.uint8[4] = b4;
-  frame.data.uint8[5] = b5;
-  frame.data.uint8[6] = b6;
-  frame.data.uint8[7] = b7;
+
+  // Copy all 8 bytes from the input array
+  for (int i = 0; i < 8; i++) {
+    frame.data.uint8[i] = data[i];
+  }
+
+  // Debug: verify frame contents before sending
+  Serial.printf("IVT: Pre-send frame check - ID:0x%03X Len:%d RTR:%d Data: %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+                frame.id, frame.length, frame.rtr,
+                frame.data.uint8[0], frame.data.uint8[1], frame.data.uint8[2], frame.data.uint8[3],
+                frame.data.uint8[4], frame.data.uint8[5], frame.data.uint8[6], frame.data.uint8[7]);
 
   if (!can->sendFrame(frame)) {
     Serial.println("IVT: ERROR - Failed to send command");

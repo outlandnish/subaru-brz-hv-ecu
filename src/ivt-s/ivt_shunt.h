@@ -28,7 +28,7 @@ public:
   void start();
   void stop();
   void restart();       // Resets accumulated Ah and kWh
-  void setDefaults();   // Reset to factory defaults
+  void set_defaults();   // Reset to factory defaults
 
   // State accessors
   float get_current() const { return current_amps; }
@@ -48,6 +48,9 @@ public:
   // Debug control
   void set_debug(bool enable) { debug_enabled = enable; }
   bool get_debug() const { return debug_enabled; }
+
+  // Public method to process CAN frames (for queue-based processing)
+  void process_can_frame(CAN_FRAME *frame) { gotFrame(frame, 0); }
 
 protected:
   // CANListener interface implementation
@@ -89,8 +92,7 @@ private:
   void handle_0x528_kwh(CAN_FRAME *frame);
 
   // Helper methods
-  void send_command(uint8_t cmd, uint8_t b1, uint8_t b2, uint8_t b3,
-                    uint8_t b4, uint8_t b5, uint8_t b6, uint8_t b7);
+  void send_command(const uint8_t data[8]);
   void send_store();
   void init_current_mode();
   void print_frame(CAN_FRAME *frame);
