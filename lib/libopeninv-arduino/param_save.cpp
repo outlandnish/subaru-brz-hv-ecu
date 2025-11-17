@@ -15,7 +15,7 @@
 #endif
 
 #ifndef PARAM_BLKNUM
-#define PARAM_BLKNUM 1      // Use last flash page
+#define PARAM_BLKNUM 2      // Use second-to-last flash page (avoids 64KB boundary at 0x08180000)
 #endif
 
 #define NUM_PARAMS ((PARAM_BLKSIZE - 8) / sizeof(PARAM_ENTRY))
@@ -142,6 +142,10 @@ uint32_t parm_save()
    }
    Serial.println("parm_save: Flash unlocked");
 
+   // Clear any previous flash errors
+   __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR |
+                          FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR | FLASH_FLAG_PGSERR);
+
    // Erase sector
    FLASH_EraseInitTypeDef eraseInit;
    uint32_t sectorError;
@@ -170,8 +174,7 @@ uint32_t parm_save()
       status = HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, addr, *pData);
       if (status != HAL_OK)
       {
-         Serial.printf("ERROR: Failed to program flash at 0x%08X (status=%d, word %d/%d)\r\n", 
-                       addr, status, idx, PARAM_WORDS);
+         Serial.printf("ERROR: Failed to program flash at 0x%08X (status=%d)\r\n", addr, status);
          HAL_FLASH_Lock();
          return 0;
       }
@@ -200,7 +203,7 @@ int parm_load()
    Serial.printf("parm_load: sizeof(PARAM_ENTRY) = %d bytes\r\n", sizeof(PARAM_ENTRY));
    Serial.printf("parm_load: sizeof(PARAM_PAGE) = %d bytes\r\n", sizeof(PARAM_PAGE));
    Serial.printf("parm_load: NUM_PARAMS = %d\r\n", NUM_PARAMS);
-   Serial.printf("parm_load: Data array size = %d bytes (%d words)\r\n", 
+   Serial.printf("parm_load: Data array size = %d bytes (%d words)\r\n",
                  sizeof(parmPage->data), sizeof(parmPage->data) / sizeof(uint32_t));
    Serial.printf("parm_load: Reading from flash at 0x%08X\r\n", paramAddress);
    Serial.printf("parm_load: Stored CRC = 0x%08X\r\n", parmPage->crc);

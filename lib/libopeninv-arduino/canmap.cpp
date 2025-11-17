@@ -526,7 +526,12 @@ uint32_t CanMap::SaveToFlash(uint32_t baseAddress, uint32_t* data, int len)
 {
    for (int idx = 0; idx < len; idx++)
    {
-      HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, baseAddress + idx * sizeof(uint32_t), *data);
+      uint32_t addr = baseAddress + idx * sizeof(uint32_t);
+      HAL_StatusTypeDef status = HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, addr, *data);
+
+      if (status != HAL_OK)
+         return status;
+
       data++;
    }
    return 0;
