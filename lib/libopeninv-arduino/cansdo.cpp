@@ -294,6 +294,29 @@ void CanSdo::ProcessSDO(uint32_t data[2])
             parm_save();
             sdo->cmd = SDO_WRITE_REPLY;
          }
+         else if (sdo->subIndex == 1)
+         {
+            // Save CAN mappings to flash
+            #ifdef ARDUINO
+            Serial.println("CAN SDO: Received save CAN maps command...");
+            #endif
+            if (canMap != nullptr)
+            {
+               canMap->Save();
+               #ifdef ARDUINO
+               Serial.println("CAN SDO: CAN maps saved successfully");
+               #endif
+               sdo->cmd = SDO_WRITE_REPLY;
+            }
+            else
+            {
+               #ifdef ARDUINO
+               Serial.println("CAN SDO: Error - CAN map not initialized");
+               #endif
+               sdo->cmd = SDO_ABORT;
+               sdo->data = SDO_ERR_GENERAL;
+            }
+         }
          else if (sdo->subIndex == 2)
          {
             // Reset/reboot command

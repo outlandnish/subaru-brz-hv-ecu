@@ -20,7 +20,7 @@
 // MM = Major (0-255), mm = Minor (0-255), pp = Patch (0-255), bb = Build (0-255)
 // Example: Version 1.2.3 = 0x01020300, Version 1.12.5 = 0x010C0500
 #define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 1
+#define FW_VERSION_MINOR 5
 #define FW_VERSION_PATCH 0
 #define FW_VERSION_BUILD 0
 #define FIRMWARE_VERSION ((FW_VERSION_MAJOR << 24) | (FW_VERSION_MINOR << 16) | (FW_VERSION_PATCH << 8) | FW_VERSION_BUILD)
