@@ -164,11 +164,12 @@ void CanSdo::ProcessSDO(uint32_t data[2])
             if (byte < 0) break;  // End of data
             bytes[i] = (uint8_t)byte;
          }
-         
+
          if (i <= bytesPerMessage)  // Reached end of data
          {
             sdo->cmd |= SDO_SIZE_SPECIFIED;
             sdo->cmd |= (bytesPerMessage - i + 1) << 1;
+            printRequest = -1;  // Clear the print request flag after transfer completes
          }
       }
       // Otherwise use legacy buffer-based approach
@@ -213,12 +214,20 @@ void CanSdo::ProcessSDO(uint32_t data[2])
       {
          if (sdo->cmd == SDO_WRITE)
          {
+            #ifdef ARDUINO
+            const Param::Attributes* attr = Param::GetAttrib(paramIdx);
+            Serial.printf("CAN SDO: Writing param '%s' = %d (0x%08X)\r\n",
+                         attr ? attr->name : "unknown", sdo->data, sdo->data);
+            #endif
             if (Param::Set(paramIdx, sdo->data) == 0)
             {
                sdo->cmd = SDO_WRITE_REPLY;
             }
             else
             {
+               #ifdef ARDUINO
+               Serial.println("CAN SDO: Parameter write failed (out of range)");
+               #endif
                sdo->cmd = SDO_ABORT;
                sdo->data = SDO_ERR_RANGE;
             }
@@ -276,13 +285,16 @@ void CanSdo::ProcessSDO(uint32_t data[2])
    {
       if (sdo->cmd == SDO_WRITE)
       {
-         if (sdo->subIndex == 0 && sdo->data == 1)
+         if (sdo->subIndex == 0)
          {
             // Save parameters to flash
+            #ifdef ARDUINO
+            Serial.println("CAN SDO: Received save command, saving parameters to flash...");
+            #endif
             parm_save();
             sdo->cmd = SDO_WRITE_REPLY;
          }
-         else if (sdo->subIndex == 2 && sdo->data == 1)
+         else if (sdo->subIndex == 2)
          {
             // Reset/reboot command
             sdo->cmd = SDO_WRITE_REPLY;
@@ -296,6 +308,9 @@ void CanSdo::ProcessSDO(uint32_t data[2])
          }
          else
          {
+            #ifdef ARDUINO
+            Serial.printf("CAN SDO: Invalid save command (subIndex=%d, data=%d)\r\n", sdo->subIndex, sdo->data);
+            #endif
             sdo->cmd = SDO_ABORT;
             sdo->data = SDO_ERR_INVIDX;
          }

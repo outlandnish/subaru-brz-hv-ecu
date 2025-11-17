@@ -43,15 +43,6 @@ void Param::Change(Param::PARAM_NUM param)
             canSdo.SetNodeId(Param::GetInt(param));
             break;
 
-        case Param::cellVoltMin:
-        case Param::cellVoltMax:
-            // Handle voltage limit changes
-            Serial.print("Voltage limits updated: ");
-            Serial.print(Param::GetInt(Param::cellVoltMin));
-            Serial.print(" - ");
-            Serial.println(Param::GetInt(Param::cellVoltMax));
-            break;
-
         default:
             break;
     }
@@ -82,15 +73,6 @@ void setup()
     Serial.println("\nCurrent Parameters:");
     Serial.print("  CAN Node ID: ");
     Serial.println(Param::GetInt(Param::canNodeId));
-    Serial.print("  Cell Voltage Min: ");
-    Serial.print(Param::GetInt(Param::cellVoltMin));
-    Serial.println(" mV");
-    Serial.print("  Cell Voltage Max: ");
-    Serial.print(Param::GetInt(Param::cellVoltMax));
-    Serial.println(" mV");
-    Serial.print("  Current Limit: ");
-    Serial.print(Param::GetInt(Param::currentLimit));
-    Serial.println(" A");
 
     // Initialize CAN bus at 500 kbps
     if (!can.begin(CAN_BPS_500K))
