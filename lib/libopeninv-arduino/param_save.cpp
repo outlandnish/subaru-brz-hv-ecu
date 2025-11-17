@@ -128,9 +128,7 @@ uint32_t parm_save()
       }
    }
 
-   // Calculate CRC over the data array only (excluding crc and padding fields)
-   uint32_t dataWords = sizeof(parmPage.data) / sizeof(uint32_t);
-   parmPage.crc = calculate_crc32((uint32_t*)&parmPage.data, dataWords);
+   parmPage.crc = calculate_crc32((uint32_t*)&parmPage, 2 * NUM_PARAMS);
 
    Serial.printf("parm_save: Saving parameters to flash at 0x%08X (sector %d)\r\n", paramAddress, sector);
    Serial.printf("parm_save: Parameter block size: %d bytes (%d words)\r\n", PARAM_BLKSIZE, PARAM_WORDS);
@@ -207,9 +205,7 @@ int parm_load()
    Serial.printf("parm_load: Reading from flash at 0x%08X\r\n", paramAddress);
    Serial.printf("parm_load: Stored CRC = 0x%08X\r\n", parmPage->crc);
 
-   // Calculate CRC over the data array only (excluding crc and padding fields)
-   uint32_t dataWords = sizeof(parmPage->data) / sizeof(uint32_t);
-   uint32_t crc = calculate_crc32((uint32_t*)&parmPage->data, dataWords);
+   uint32_t crc = calculate_crc32((uint32_t*)parmPage, 2 * NUM_PARAMS);
    Serial.printf("parm_load: Calculated CRC = 0x%08X\r\n", crc);
 
    if (crc == parmPage->crc)
