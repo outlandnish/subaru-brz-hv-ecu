@@ -8,11 +8,11 @@
 #include "main.h"
 #include <STM32FreeRTOS.h>
 #include <Adafruit_NeoPixel.h>
+#include <ArduinoJson.h>
 
 Adafruit_NeoPixel strip = Adafruit_NeoPixel(STATUS_LED_COUNT, STATUS_LEDS, NEO_GRB + NEO_KHZ800);
 
 // CAN bus instances
-CANBus *ipc_can = nullptr;  // IPC CAN for PCS control (500kbps)
 CANBus *m3_can = nullptr;   // M3 CAN for external communication
 CANBus *hv_can = nullptr;   // HV CAN for IVT shunt and vehicle comms (500kbps)
 
@@ -21,6 +21,11 @@ IVTShunt *ivt_shunt = nullptr;
 
 // CHAdeMO controller (Foccci on M3/CP CAN)
 CHAdeMOController *chademo = nullptr;
+
+// libopeninv CanOpen SDO for BMS CAN communication
+CanHardwareArduino *hv_can_hardware = nullptr;
+CanMap *can_map = nullptr;
+CanSdo *can_sdo = nullptr;
 
 // HV CAN monitoring
 bool hv_can_monitor_enabled = false;
@@ -31,8 +36,6 @@ bool m3_can_test_enabled = false;
 uint32_t m3_can_test_interval_ms = 1000;  // Default 1Hz
 uint32_t m3_can_test_count = 0;
 
-// CAN message queues for thread-safe message passing
-QueueHandle_t ipc_can_queue = nullptr;
 QueueHandle_t m3_can_queue = nullptr;
 QueueHandle_t hv_can_queue = nullptr;
 
@@ -44,24 +47,28 @@ BatteryCellControllerConfig bcc1_config;
 
 BatteryManagementSystem *bms;
 
+// Pre-generated parameter JSON for web interface
+String parameterJson;
+
+// Forward declarations
+void send_parameter_json();
+
+// Direct data source callback for JSON transfer - returns byte at offset or -1 if out of range
+int get_json_byte(uint32_t offset) {
+  if (offset >= parameterJson.length()) {
+    return -1;  // End of data
+  }
+  return (int)(uint8_t)parameterJson[offset];
+}
+
 // CAN RX polling task - reads from hardware and puts messages into queues
 void can_rx_task(void *pvParameters) {
   CAN_FRAME frame;
   static uint32_t last_debug = 0;
-  static uint32_t ipc_read_count = 0;
   static uint32_t m3_read_count = 0;
   static uint32_t hv_read_count = 0;
 
-  while (true) {
-    // Poll IPC CAN bus
-    if (ipc_can && ipc_can->available()) {
-      while (ipc_can->read(frame)) {
-        ipc_read_count++;
-        Serial.printf("IPC RX: 0x%03X\r\n", frame.id);
-        xQueueSend(ipc_can_queue, &frame, 0);
-      }
-    }
-
+  while (true)  {
     // Poll M3 CAN bus
     if (m3_can && m3_can->available()) {
       while (m3_can->read(frame)) {
@@ -101,6 +108,13 @@ void ivt_process_task(void *pvParameters) {
     // TODO: replace with HV can when the hardware is fixed
     // Wait for M3 CAN message (block for up to 10ms)
     if (xQueueReceive(m3_can_queue, &frame, pdMS_TO_TICKS(10)) == pdTRUE) {
+      // Process all messages through CanOpen SDO handler first
+      if (hv_can_hardware && can_sdo) {
+        uint32_t data[2];
+        memcpy(data, frame.data.uint8, 8);
+        hv_can_hardware->HandleRx(frame.id, data, frame.length);
+      }
+
       // Check if message is for IVT (0x521-0x528 or 0x511)
       if ((frame.id >= 0x521 && frame.id <= 0x528) || frame.id == 0x511) {
         if (ivt_shunt) {
@@ -117,72 +131,75 @@ void ivt_process_task(void *pvParameters) {
   }
 }
 
+// Generate parameter JSON once at startup
+void build_parameter_json() {
+  JsonDocument doc;
 
-// Function to jump directly to STM32 bootloader
-void jump_to_bootloader() {
-  typedef void (*pFunction)(void);
-  pFunction JumpToBootloader;
-  uint32_t bootloader_addr = 0x1FFF0000;  // STM32F413VH bootloader address
+  for (int i = 0; i < Param::PARAM_LAST; i++) {
+    const Param::Attributes* attr = Param::GetAttrib((Param::PARAM_NUM)i);
+    if (!attr) continue;
 
-  // Disable all interrupts first
-  __disable_irq();
-
-  // Stop FreeRTOS scheduler if running
-  vTaskSuspendAll();
-
-  // Disable SysTick
-  SysTick->CTRL = 0;
-  SysTick->LOAD = 0;
-  SysTick->VAL = 0;
-
-  // Clear all pending interrupts
-  for (uint8_t i = 0; i < 8; i++) {
-    NVIC->ICER[i] = 0xFFFFFFFF;  // Disable all interrupts
-    NVIC->ICPR[i] = 0xFFFFFFFF;  // Clear all pending flags
+    JsonObject param = doc[attr->name].to<JsonObject>();
+    param["unit"] = attr->unit;
+    param["category"] = attr->category;
+    // Use native float values directly (no conversion needed)
+    param["minimum"] = attr->min;
+    param["maximum"] = attr->max;
+    param["default"] = attr->def;
+    param["id"] = attr->id;  // Add parameter ID for SDO access
+    param["isparam"] = (Param::GetType((Param::PARAM_NUM)i) == Param::TYPE_PARAM) ? 1 : 0;
+    
+    // Format version as major.minor float for web interface
+    if (strcmp(attr->name, "version") == 0) {
+      uint32_t ver = Param::GetInt((Param::PARAM_NUM)i);
+      uint8_t major = (ver >> 24) & 0xFF;
+      uint8_t minor = (ver >> 16) & 0xFF;
+      float version_float = major + (minor / 10.0f);  // e.g., 0.1 or 1.2
+      param["value"] = version_float;
+    }
+    // For other spot values, include current value
+    else if (Param::GetType((Param::PARAM_NUM)i) == Param::TYPE_SPOTVALUE) {
+      param["value"] = Param::GetFloat((Param::PARAM_NUM)i);
+    }
   }
 
-  // Disable and deinitialize USB peripheral
-  #ifdef USBCON
-  // Disable USB peripheral registers
-  USB_OTG_FS->GCCFG = 0;
-  USB_OTG_FS->GOTGCTL = 0;
+  serializeJson(doc, parameterJson);
+  Serial.printf("Generated parameter JSON (%d bytes)\r\n", parameterJson.length());
+  
+  // Update CanSdo with actual JSON size
+  if (can_sdo != nullptr) {
+    can_sdo->SetJsonSize(parameterJson.length());
+  }
+}
 
-  // Disable USB clock
-  __HAL_RCC_USB_OTG_FS_CLK_DISABLE();
-  #endif
+// Send stored JSON to web interface
+void send_parameter_json() {
+  if (!can_sdo || parameterJson.length() == 0) return;
 
-  // Reset all peripherals to default state
-  __HAL_RCC_APB1_FORCE_RESET();
-  __HAL_RCC_APB1_RELEASE_RESET();
-  __HAL_RCC_APB2_FORCE_RESET();
-  __HAL_RCC_APB2_RELEASE_RESET();
-  __HAL_RCC_AHB1_FORCE_RESET();
-  __HAL_RCC_AHB1_RELEASE_RESET();
+  // Send all data without delays - the print buffer and timeout mechanism will handle flow control
+  for (unsigned int i = 0; i < parameterJson.length(); i++) {
+    can_sdo->PutChar(parameterJson[i]);
+  }
+}
 
-  // Deinitialize HAL
-  HAL_DeInit();
+// CanOpen periodic task - sends mapped CAN messages
+void canopen_periodic_task(void *pvParameters) {
+  Serial.println("CanOpen Periodic Task: Started");
 
-  // Reset clock to default HSI
-  HAL_RCC_DeInit();
+  while (true) {
+    // Send all mapped CAN messages
+    if (can_map != nullptr) {
+      can_map->SendAll();
+    }
 
-  // Remap system memory to 0x00000000
-  #if defined(__HAL_SYSCFG_REMAPMEMORY_SYSTEMFLASH)
-  __HAL_SYSCFG_REMAPMEMORY_SYSTEMFLASH();
-  #else
-  SYSCFG->MEMRMP = 0x01;  // Map system flash at 0x00000000
-  #endif
+    // Trigger SDO timeout handling
+    if (can_sdo != nullptr) {
+      can_sdo->TriggerTimeout(10);  // 10ms period
+    }
 
-  // Set stack pointer to bootloader stack
-  __set_MSP(*(__IO uint32_t*)bootloader_addr);
-
-  // Get bootloader entry point
-  JumpToBootloader = (pFunction)(*(__IO uint32_t*)(bootloader_addr + 4));
-
-  // Jump to bootloader
-  JumpToBootloader();
-
-  // Should never reach here
-  while(1);
+    // Periodic delay (100Hz - 10ms for responsive SDO communication)
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
 }
 
 // Serial console task for user commands
@@ -259,12 +276,34 @@ void console_task(void *pvParameters) {
             Serial.println("chademo limits <v> <a>");
             Serial.println("                      - Set EVSE capabilities (max voltage/current)");
             Serial.println();
+
+            Serial.println("=== CanOpen SDO Commands ===");
+            Serial.println("can sdo read <nodeId> <index> <subIndex>");
+            Serial.println("                      - Read SDO parameter from remote node");
+            Serial.println("can sdo write <nodeId> <index> <subIndex> <value>");
+            Serial.println("                      - Write SDO parameter to remote node");
+            Serial.println("can map save          - Save CAN mappings to flash");
+            Serial.println("can node <id>         - Set local CAN node ID");
+            Serial.println();
           }
           else if (inputBuffer == "status") {
             BMS_State state = bms->get_state();
             const char* state_str[] = {"Initialization", "Idle", "Charging", "Cell Balancing", "Cooldown", "Sleep", "Error"};
             Serial.println("\n=== BMS Status ===");
             Serial.printf("State: %s\r\n", state_str[state]);
+            Serial.println();
+            
+            // Show spot values being transmitted
+            Serial.println("=== Spot Values (being transmitted on CAN) ===");
+            Serial.printf("Pack Voltage: %.2f V\r\n", Param::GetFloat(Param::packVoltage));
+            Serial.printf("Pack Current: %.2f A\r\n", Param::GetFloat(Param::packCurrent));
+            Serial.printf("Max Cell: %d mV\r\n", Param::GetInt(Param::maxCellVolt));
+            Serial.printf("Min Cell: %d mV\r\n", Param::GetInt(Param::minCellVolt));
+            Serial.printf("Cell Diff: %d mV\r\n", Param::GetInt(Param::cellVoltDiff));
+            Serial.printf("SOC: %d %%\r\n", Param::GetInt(Param::soc));
+            Serial.printf("BMS State: %d\r\n", Param::GetInt(Param::bmsState));
+            Serial.printf("HV State: %d\r\n", Param::GetInt(Param::hvState));
+            Serial.printf("Safe Charge Current: %d A\r\n", Param::GetInt(Param::safeChargeCurrent));
             Serial.println();
           }
           else if (inputBuffer == "bcc") {
@@ -521,6 +560,87 @@ void console_task(void *pvParameters) {
               chademo->stop_charging();
             }
           }
+          else if (inputBuffer.startsWith("can sdo read ")) {
+            if (can_sdo == nullptr) {
+              Serial.println("\nError: CanOpen SDO not configured\n");
+            } else {
+              // Parse: can sdo read <nodeId> <index> <subIndex>
+              String args = inputBuffer.substring(13);
+              int space1 = args.indexOf(' ');
+              int space2 = args.indexOf(' ', space1 + 1);
+              if (space1 > 0 && space2 > space1) {
+                uint8_t nodeId = strtol(args.substring(0, space1).c_str(), NULL, 0);
+                uint16_t index = strtol(args.substring(space1 + 1, space2).c_str(), NULL, 0);
+                uint8_t subIndex = strtol(args.substring(space2 + 1).c_str(), NULL, 0);
+
+                Serial.printf("\nReading SDO: Node %d, Index 0x%04X, SubIndex %d\r\n", nodeId, index, subIndex);
+                can_sdo->SDORead(nodeId, index, subIndex);
+
+                // Wait for reply (with timeout)
+                uint32_t start = millis();
+                uint32_t data = 0;
+                while (millis() - start < 1000) {
+                  if (can_sdo->SDOReadReply(data)) {
+                    Serial.printf("SDO Reply: 0x%08X (%d)\r\n\n", data, (int32_t)data);
+                    break;
+                  }
+                  delay(10);
+                }
+                if (millis() - start >= 1000) {
+                  Serial.println("SDO Read timeout\n");
+                }
+              } else {
+                Serial.println("\nError: Usage: can sdo read <nodeId> <index> <subIndex>\n");
+              }
+            }
+          }
+          else if (inputBuffer.startsWith("can sdo write ")) {
+            if (can_sdo == nullptr) {
+              Serial.println("\nError: CanOpen SDO not configured\n");
+            } else {
+              // Parse: can sdo write <nodeId> <index> <subIndex> <value>
+              String args = inputBuffer.substring(14);
+              int space1 = args.indexOf(' ');
+              int space2 = args.indexOf(' ', space1 + 1);
+              int space3 = args.indexOf(' ', space2 + 1);
+              if (space1 > 0 && space2 > space1 && space3 > space2) {
+                uint8_t nodeId = strtol(args.substring(0, space1).c_str(), NULL, 0);
+                uint16_t index = strtol(args.substring(space1 + 1, space2).c_str(), NULL, 0);
+                uint8_t subIndex = strtol(args.substring(space2 + 1, space3).c_str(), NULL, 0);
+                uint32_t value = strtol(args.substring(space3 + 1).c_str(), NULL, 0);
+
+                Serial.printf("\nWriting SDO: Node %d, Index 0x%04X, SubIndex %d, Value 0x%08X\r\n", nodeId, index, subIndex, value);
+                can_sdo->SDOWrite(nodeId, index, subIndex, value);
+                Serial.println("SDO Write sent\n");
+              } else {
+                Serial.println("\nError: Usage: can sdo write <nodeId> <index> <subIndex> <value>\n");
+              }
+            }
+          }
+          else if (inputBuffer == "can map save") {
+            if (can_map == nullptr) {
+              Serial.println("\nError: CAN mapping not configured\n");
+            } else {
+              Serial.println("\nSaving CAN mappings to flash...");
+              can_map->Save();
+              Serial.println("CAN mappings saved\n");
+            }
+          }
+          else if (inputBuffer.startsWith("can node ")) {
+            if (can_sdo == nullptr) {
+              Serial.println("\nError: CanOpen SDO not configured\n");
+            } else {
+              String arg = inputBuffer.substring(9);
+              uint8_t nodeId = arg.toInt();
+              if (nodeId > 0 && nodeId < 128) {
+                can_sdo->SetNodeId(nodeId);
+                Param::SetInt(Param::canNodeId, nodeId);
+                Serial.printf("\nCAN Node ID set to %d\r\n\n", nodeId);
+              } else {
+                Serial.println("\nError: Node ID must be between 1 and 127\n");
+              }
+            }
+          }
           else if (inputBuffer == "hv") {
             Serial.println("\n=== HV System Status ===");
             const char* hv_state_str[] = {"Disabled", "Precharge", "Active", "Fault", "Shutdown"};
@@ -620,7 +740,7 @@ void console_task(void *pvParameters) {
               String value = inputBuffer.substring(15);
               float voltage = value.toFloat();
               if (voltage >= 2.5 && voltage <= 4.2) {
-                Param::SetFloat(Param::targetCellVolt, voltage);
+                Param::SetFloat(Param::targetCellVolt, voltage * 1000.0f);  // Convert V to mV
                 Serial.printf("\nTarget voltage set to %.2f V (will take effect after reboot)\r\n\n", voltage);
               } else {
                 Serial.println("\nError: Voltage must be between 2.5V and 4.2V\n");
@@ -701,6 +821,21 @@ void setup() {
   } else {
     Serial.println("No saved parameters found, using defaults");
   }
+
+  // Set firmware version (store as raw integer)
+  Param::SetInt(Param::version, FIRMWARE_VERSION);
+  Serial.printf("Firmware version: 0x%08X (v%d.%d.%d.%d)\r\n",
+                FIRMWARE_VERSION,
+                FW_VERSION_MAJOR,
+                FW_VERSION_MINOR,
+                FW_VERSION_PATCH,
+                FW_VERSION_BUILD);
+
+  // Display STM32 unique device ID (used as serial number)
+  Serial.printf("Device Serial: %08X-%08X-%08X\r\n",
+                STM32_UNIQUE_ID[0],
+                STM32_UNIQUE_ID[1],
+                STM32_UNIQUE_ID[2]);
   Serial.println();
 
   // Configure BCC hardware from parameters
@@ -737,13 +872,6 @@ void setup() {
 
   // Initialize CAN buses
   Serial.println("Initializing CAN buses...");
-  ipc_can = new CANBus(IPC_CAN_RX, IPC_CAN_TX);
-  if (!ipc_can->begin(CAN_BPS_500K)) {  // 500kbps for IPC CAN
-    Serial.println("ERROR: Failed to initialize IPC CAN!");
-  } else {
-    Serial.println("IPC CAN initialized at 500kbps");
-  }
-  ipc_can->watchFor();
 
   m3_can = new CANBus(M3_CAN_RX, M3_CAN_TX);
   if (!m3_can->begin(CAN_BPS_500K)) {  // 500kbps for M3 CAN
@@ -751,7 +879,7 @@ void setup() {
   } else {
     Serial.println("M3 CAN initialized at 500kbps");
   }
-  ipc_can->watchFor();
+  m3_can->watchFor();
 
   hv_can = new CANBus(HV_CAN_RX, HV_CAN_TX);
   if (!hv_can->begin(CAN_BPS_500K)) {  // 500kbps for HV CAN
@@ -761,6 +889,62 @@ void setup() {
   }
   Serial.println();
   hv_can->watchFor();
+
+  // Initialize libopeninv CanOpen SDO for BMS CAN communication
+  Serial.println("Initializing CanOpen SDO for BMS communication...");
+  hv_can_hardware = new CanHardwareArduino(m3_can);
+  can_map = new CanMap(hv_can_hardware);
+  can_sdo = new CanSdo(hv_can_hardware, can_map);
+  can_sdo->SetNodeId(Param::GetInt(Param::canNodeId));  // Use node ID from parameters
+  
+  // Set up direct data source for on-demand JSON delivery (no buffer needed!)
+  can_sdo->SetDataSource(get_json_byte);
+  
+  Serial.printf("CanOpen SDO initialized on M3 CAN (Node ID: %d)\r\n", Param::GetInt(Param::canNodeId));
+  Serial.println();
+
+  // Configure CAN message mappings for BMS spot values
+  // Serial.println("Configuring CAN message mappings for BMS telemetry...");
+  // // Pack voltage and current on 0x420
+  // can_map->AddSend(Param::packVoltage, 0x420, 0, 32, 1000.0f);      // V -> mV, bits 0-31
+  // can_map->AddSend(Param::packCurrent, 0x420, 32, 32, 1000.0f);     // A -> mA, bits 32-63
+  
+  // // Cell voltages and SOC on 0x421
+  // can_map->AddSend(Param::maxCellVolt, 0x421, 0, 16, 1.0f);         // mV, bits 0-15
+  // can_map->AddSend(Param::minCellVolt, 0x421, 16, 16, 1.0f);        // mV, bits 16-31
+  // can_map->AddSend(Param::soc, 0x421, 32, 16, 10.0f);               // % * 10, bits 32-47
+  // can_map->AddSend(Param::cellVoltDiff, 0x421, 48, 16, 1.0f);       // mV, bits 48-63
+  
+  // // BMS status and states on 0x422
+  // can_map->AddSend(Param::bmsState, 0x422, 0, 8, 1.0f);             // BMS state enum, bits 0-7
+  // can_map->AddSend(Param::hvState, 0x422, 8, 8, 1.0f);              // HV state enum, bits 8-15
+  // can_map->AddSend(Param::bcc0Initialized, 0x422, 16, 1, 1.0f);     // Boolean, bit 16
+  // can_map->AddSend(Param::bcc1Initialized, 0x422, 17, 1, 1.0f);     // Boolean, bit 17
+  // can_map->AddSend(Param::faultStatus, 0x422, 24, 16, 1.0f);        // Fault bits, bits 24-39
+  // can_map->AddSend(Param::safeChargeCurrent, 0x422, 40, 16, 10.0f); // A * 10, bits 40-55
+  
+  Serial.println("CAN mappings configured:");
+  Serial.println("  0x420: Pack voltage, current");
+  Serial.println("  0x421: Cell voltages (min/max/diff), SOC");
+  Serial.println("  0x422: BMS/HV state, initialization, faults, safe current");
+  
+  // Configure CAN receive mappings for IVT shunt messages
+  // IVT format: Byte 0=MuxID, Byte 1=counter, Bytes 2-5=32-bit big-endian value
+  // Serial.println("Configuring CAN receive mappings for IVT shunt...");
+  // can_map->AddRecv(Param::ivtCurrent, 0x521, 16, -32, 0.001f);      // mA -> A, big-endian
+  // can_map->AddRecv(Param::ivtVoltage1, 0x522, 16, -32, 0.001f);     // mV -> V, big-endian
+  // can_map->AddRecv(Param::ivtVoltage2, 0x523, 16, -32, 0.001f);     // mV -> V, big-endian
+  // can_map->AddRecv(Param::ivtVoltage3, 0x524, 16, -32, 0.001f);     // mV -> V, big-endian
+  // can_map->AddRecv(Param::ivtTemperature, 0x525, 16, -32, 0.1f);    // deci-deg -> C, big-endian
+  // can_map->AddRecv(Param::ivtPower, 0x526, 16, -32, 0.001f);        // W -> kW, big-endian
+  
+  Serial.println("  0x521: IVT Current (A)");
+  Serial.println("  0x522: IVT Voltage 1 (V)");
+  Serial.println("  0x523: IVT Voltage 2 (V)");
+  Serial.println("  0x524: IVT Voltage 3 (V)");
+  Serial.println("  0x525: IVT Temperature (C)");
+  Serial.println("  0x526: IVT Power (kW)");
+  Serial.println();
 
   // Initialize IVT current shunt
   Serial.println("Initializing IVT current shunt...");
@@ -785,7 +969,7 @@ void setup() {
 
   // Display loaded charging parameters
   Serial.println("Charging parameters loaded from parameter system:");
-  Serial.printf("  Target cell voltage: %.2f V\r\n", Param::GetFloat(Param::targetCellVolt));
+  Serial.printf("  Target cell voltage: %.2f V\r\n", Param::GetFloat(Param::targetCellVolt) / 1000.0f);  // Convert mV to V
   Serial.printf("  Balance threshold: %.1f mV\r\n", Param::GetFloat(Param::balanceThreshold));
   Serial.printf("  Balance target: %.1f mV\r\n", Param::GetFloat(Param::balanceTarget));
   Serial.printf("  Measurement interval: %d ms (%.1f Hz)\r\n",
@@ -799,7 +983,7 @@ void setup() {
   Serial.println("Configuring IVT shunt and CHAdeMO with BMS...");
   bms->set_ivt_shunt(ivt_shunt);
   bms->set_chademo(chademo);
-  bms->set_can_buses(ipc_can, m3_can, hv_can);
+  bms->set_can_buses(m3_can, hv_can);
 
   // Configure contactor control pins
   Serial.println("Configuring contactor control...");
@@ -838,11 +1022,10 @@ void setup() {
 
   // Create CAN message queues
   Serial.println("Creating CAN message queues...");
-  ipc_can_queue = xQueueCreate(CAN_QUEUE_LENGTH, sizeof(CAN_FRAME));
   m3_can_queue = xQueueCreate(CAN_QUEUE_LENGTH, sizeof(CAN_FRAME));
   hv_can_queue = xQueueCreate(CAN_QUEUE_LENGTH, sizeof(CAN_FRAME));
 
-  if (!ipc_can_queue || !m3_can_queue || !hv_can_queue) {
+  if (!m3_can_queue || !hv_can_queue) {
     Serial.println("ERROR: Failed to create CAN queues!");
     Serial.println("System halted.");
     while (1) {
@@ -897,13 +1080,32 @@ void setup() {
   Serial.println("IVT processing task started");
   Serial.println();
 
+  // Create CanOpen periodic task (sends mapped CAN messages)
+  Serial.println("Starting CanOpen periodic task...");
+  result = xTaskCreate(
+    canopen_periodic_task,
+    "CanOpen",
+    1024,
+    NULL,
+    2,  // Medium priority
+    NULL
+  );
+
   if (result != pdPASS) {
-    Serial.println("ERROR: Failed to create M3 test task!");
+    Serial.println("ERROR: Failed to create CanOpen periodic task!");
     Serial.println("System halted.");
     while (1) {
       delay(1000);
     }
   }
+
+  Serial.println("CanOpen periodic task started");
+  Serial.println();
+
+  // Generate parameter JSON for web interface
+  Serial.println("Generating parameter JSON...");
+  build_parameter_json();
+  Serial.println();
 
   // Create console task for user interaction
   Serial.println("Starting serial console...");
