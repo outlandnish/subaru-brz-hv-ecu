@@ -64,6 +64,7 @@ def capture_data(port, output_file, baudrate=115200, timeout=60):
             f.write("#\n")
 
             csv_started = False
+            csv_header_written = False
             last_data_time = time.time()
             line_count = 0
 
@@ -89,20 +90,30 @@ def capture_data(port, output_file, baudrate=115200, timeout=60):
                         # Print to console
                         print(line)
 
-                        # Check if this is CSV data
-                        if line.startswith('CSV Format:'):
+                        # Check if this is the BCC config dump CSV marker
+                        if '=== CSV Format: BCC Configuration Dump ===' in line:
                             csv_started = True
-                            f.write("BCC,CID,Field,Address,Value,Description\n")
+                            csv_header_written = False
                             continue
 
-                        # Write CSV data to file
-                        if csv_started and ',' in line and not line.startswith('#'):
-                            f.write(line + '\n')
-                            line_count += 1
-                            f.flush()  # Ensure data is written immediately
+                        # If CSV started but header not written, next line is the header
+                        if csv_started and not csv_header_written:
+                            if ',' in line and not line.startswith('#'):
+                                f.write(line + '\n')
+                                csv_header_written = True
+                                f.flush()
+                            continue
+
+                        # Write CSV data to file (after header is written)
+                        if csv_started and csv_header_written and ',' in line and not line.startswith('#'):
+                            # Skip lines that look like separators or markers
+                            if not line.startswith('===') and not line.startswith('---'):
+                                f.write(line + '\n')
+                                line_count += 1
+                                f.flush()  # Ensure data is written immediately
 
                         # Check for completion
-                        if 'Characterization Complete!' in line:
+                        if 'Characterization Complete!' in line or 'Config dump complete' in line:
                             print(f"\n\nCapture complete! {line_count} data lines saved.")
                             break
 

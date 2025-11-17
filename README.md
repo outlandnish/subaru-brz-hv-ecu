@@ -177,7 +177,6 @@ balance_threshold_mv     = 50.0mV  // Start balancing when cells differ by this 
 balance_target_mv        = 10.0mV  // Resume charging when cells are balanced to this level
 balancing_timer_min      = 5 min   // Balancing timer duration
 measurement_interval_ms  = 20ms    // Voltage measurement frequency (50 Hz)
-voltage_filter_alpha     = 0.2     // Exponential filter coefficient
 ```
 
 ## Architecture
@@ -193,7 +192,6 @@ voltage_filter_alpha     = 0.2     // Exponential filter coefficient
 2. **BCC0 Monitor Task** (Priority 2)
    - Initializes BCC hardware (after scheduler starts)
    - Reads cell voltages and stack voltage at 50 Hz (20ms interval)
-   - Applies exponential filtering to smooth measurements (alpha = 0.2)
    - Checks fault status every 5 seconds
    - Periodic reporting to console (every 1 second)
 
