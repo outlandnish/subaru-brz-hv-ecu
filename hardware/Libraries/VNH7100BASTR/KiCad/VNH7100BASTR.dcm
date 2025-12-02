@@ -1,0 +1,9 @@
+EESchema-DOCLIB  Version 2.0
+#
+$CMP VNH7100BASTR
+D STMicroelectronics VNH7100BASTR Motor Driver IC 16-Pin, SOIC
+K
+F https://www.st.com/resource/en/datasheet/dm00314832.pdf
+$ENDCMP
+#
+#End Doc Library

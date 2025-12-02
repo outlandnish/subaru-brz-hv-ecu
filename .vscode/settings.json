@@ -9,7 +9,9 @@
     "string": "cpp",
     "string_view": "cpp",
     "unordered_map": "cpp",
-    "vector": "cpp"
+    "vector": "cpp",
+    "random": "cpp",
+    "limits": "cpp"
   },
   "C_Cpp.intelliSenseEngine": "default",
   "C_Cpp.errorSquiggles": "enabled",

@@ -1,0 +1,9 @@
+Manufacturer=TE Connectivity
+PartNumber=DTM1312PA12PBR008
+PartCategory=Connector
+PackageCategory=Other
+PinCount=24
+Version=1.1
+Released=2019-03-18 22:17:24
+Downloaded=2025-02-16 17:38:07
+3D=Y

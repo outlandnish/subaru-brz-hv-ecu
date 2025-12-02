@@ -1,0 +1,224 @@
+(kicad_sch
+	(version 20250114)
+	(generator "eeschema")
+	(generator_version "9.0")
+	(uuid "156d8332-cb25-4b0f-bb15-745e4bf57200")
+	(paper "A4")
+	(lib_symbols)
+	(sheet
+		(at 37.465 22.225)
+		(size 29.21 16.51)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0.0000)
+		)
+		(uuid "595a58c0-4a20-4ff8-8a06-b1c86d932991")
+		(property "Sheetname" "BMS Communication"
+			(at 37.465 21.5134 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "bms.kicad_sch"
+			(at 37.465 39.3196 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "HV ECU"
+				(path "/156d8332-cb25-4b0f-bb15-745e4bf57200"
+					(page "2")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 106.045 22.225)
+		(size 29.21 16.51)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0.0000)
+		)
+		(uuid "809feaa8-7c22-4b93-9c33-e43ffb219534")
+		(property "Sheetname" "CAN Communication"
+			(at 106.045 21.5134 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "can.kicad_sch"
+			(at 106.045 39.3196 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "HV ECU"
+				(path "/156d8332-cb25-4b0f-bb15-745e4bf57200"
+					(page "4")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 71.12 22.225)
+		(size 29.21 16.51)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0.0000)
+		)
+		(uuid "a101c909-c369-493f-af84-06a388a5f9d9")
+		(property "Sheetname" "Microcontroller"
+			(at 71.12 21.5134 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "mcu.kicad_sch"
+			(at 71.12 39.3196 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "HV ECU"
+				(path "/156d8332-cb25-4b0f-bb15-745e4bf57200"
+					(page "3")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 177.8 22.225)
+		(size 29.21 16.51)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0.0000)
+		)
+		(uuid "c25d851d-8d7c-4a85-8f3d-1d60cfa82f99")
+		(property "Sheetname" "Peripherals"
+			(at 177.8 21.5134 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "peripherals.kicad_sch"
+			(at 177.8 39.3196 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "HV ECU"
+				(path "/156d8332-cb25-4b0f-bb15-745e4bf57200"
+					(page "6")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 141.605 22.225)
+		(size 29.21 16.51)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0.0000)
+		)
+		(uuid "df542122-508e-4f03-86c6-ed26838c0e1c")
+		(property "Sheetname" "Power"
+			(at 141.605 21.5134 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "power.kicad_sch"
+			(at 141.605 39.3196 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "HV ECU"
+				(path "/156d8332-cb25-4b0f-bb15-745e4bf57200"
+					(page "5")
+				)
+			)
+		)
+	)
+	(sheet_instances
+		(path "/"
+			(page "1")
+		)
+	)
+	(embedded_fonts no)
+)

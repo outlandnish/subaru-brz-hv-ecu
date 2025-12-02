@@ -1,0 +1,9 @@
+EESchema-DOCLIB  Version 2.0
+#
+$CMP SISA01DN-T1-GE3
+D VISHAY - SISA01DN-T1-GE3 - MOSFET, P-CH, -30V, -60A, POWERPAK 1212
+K
+F https://www.vishay.com/docs/76198/sisa01dn.pdf
+$ENDCMP
+#
+#End Doc Library

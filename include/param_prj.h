@@ -55,7 +55,13 @@
     \
     /* Read-only spot values */ \
     VALUE_ENTRY(version, "", 1000) \
-    VALUE_ENTRY(serialNumber, "", 999) \
+    VALUE_ENTRY(hwver, "0=HV ECU V1", 1026) \
+    VALUE_ENTRY(opmode, "0=Initialization, 1=Idle, 2=Charging, 3=Balancing, 4=Cooldown, 5=Sleep, 6=Error", 1027) \
+    VALUE_ENTRY(lasterr, "0=None, 1=CellOvervoltage, 2=CellUndervoltage, 3=CellOvertemp, 4=CellBalanceOpen, 5=CellBalanceShort, 6=BCC0CommFault, 7=BCC1CommFault, 8=IVTCommLoss, 9=IVTOvervoltage, 10=IVTUndervoltage, 11=IVTOvertemp, 12=PrechargeTimeout, 13=PrechargeFailed, 14=ContactorFault, 15=PackOvervoltage, 16=PackUndervoltage", 1028) \
+    VALUE_ENTRY(status, "0=Disabled, 1=Precharge, 2=Active, 3=Fault, 4=Shutdown", 1029) \
+    VALUE_ENTRY(serial, "", 1030) \
+    VALUE_ENTRY(faultModule, "", 1031) \
+    VALUE_ENTRY(faultCell, "", 1032) \
     VALUE_ENTRY(cellVoltMin, "mV", 2) \
     VALUE_ENTRY(cellVoltMax, "mV", 3) \
     VALUE_ENTRY(packVoltage, "V", 1001) \

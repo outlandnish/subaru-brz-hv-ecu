@@ -1,0 +1,9 @@
+EESchema-DOCLIB  Version 2.0
+#
+$CMP MC33664ATL1EG
+D Interface - Specialized Isolated network high speed transceiver
+K
+F http://www.nxp.com/docs/en/data-sheet/MC33664_SDS.pdf
+$ENDCMP
+#
+#End Doc Library

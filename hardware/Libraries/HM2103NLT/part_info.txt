@@ -1,0 +1,9 @@
+Manufacturer=Pulse Electronics
+PartNumber=HM2103NLT
+PartCategory=Transformer
+PackageCategory=Small Outline Packages
+PinCount=6
+Version=2.1
+Released=2019-03-05 16:30:50
+Downloaded=2025-02-15 02:24:27
+3D=Y

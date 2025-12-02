@@ -1,0 +1,10 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "MC33664ATL1EG")(type "KiCad")(uri "${KIPRJMOD}/Libraries/MC33664ATL1EG/KiCad/MC33664ATL1EG.kicad_sym")(options "")(descr ""))
+  (lib (name "PESD5V0V1BA_115")(type "KiCad")(uri "${KIPRJMOD}/Libraries/PESD5V0V1BA,115/KiCad/PESD5V0V1BA_115.kicad_sym")(options "")(descr ""))
+  (lib (name "HM2103NLT")(type "KiCad")(uri "${KIPRJMOD}/Libraries/HM2103NLT/KiCad/HM2103NLT.kicad_sym")(options "")(descr ""))
+  (lib (name "DTM1312PA12PBR008")(type "KiCad")(uri "${KIPRJMOD}/Libraries/DTM1312PA12PBR008/KiCad/DTM1312PA12PBR008.kicad_sym")(options "")(descr ""))
+  (lib (name "TJA1050T_CM_118")(type "KiCad")(uri "${KIPRJMOD}/Libraries/TJA1050T_CM,118/KiCad/TJA1050T_CM_118.kicad_sym")(options "")(descr ""))
+  (lib (name "2025-02-19_17-11-12")(type "KiCad")(uri "${KIPRJMOD}/Libraries/SZNUP2105LT1G/KiCADv6/2025-02-19_17-11-12.kicad_sym")(options "")(descr ""))
+  (lib (name "HV ECU")(type "KiCad")(uri "${KIPRJMOD}/Libraries/HV ECU.kicad_sym")(options "")(descr ""))
+)

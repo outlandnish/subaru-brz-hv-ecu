@@ -271,7 +271,7 @@ void CanSdo::ProcessSDO(uint32_t data[2])
             sdo->data = uniqueId[2]; // Duplicate last word for subindex 3
          #else
          // Fallback for non-Arduino platforms
-         sdo->data = Param::Get(Param::serialNumber) + sdo->subIndex;
+         sdo->data = Param::Get(Param::serial) + sdo->subIndex;
          #endif
          sdo->cmd = SDO_READ_REPLY;
       }

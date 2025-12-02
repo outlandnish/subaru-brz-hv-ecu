@@ -1,0 +1,9 @@
+Manufacturer=STMicroelectronics
+PartNumber=VNH7100BASTR
+PartCategory=Integrated Circuit
+PackageCategory=Small Outline Packages
+PinCount=16
+Version=2.1
+Released=2019-07-04 15:07:01
+Downloaded=2025-02-15 23:24:34
+3D=Y

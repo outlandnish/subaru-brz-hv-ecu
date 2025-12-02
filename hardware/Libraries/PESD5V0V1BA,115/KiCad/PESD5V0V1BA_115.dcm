@@ -1,0 +1,9 @@
+EESchema-DOCLIB  Version 2.0
+#
+$CMP PESD5V0V1BA,115
+D Nexperia PESD5V0V1BA,115, Bi-Directional ESD Protection Diode, 45W, 2-Pin SOD-323
+K
+F https://assets.nexperia.com/documents/data-sheet/PESD5V0V1BA.pdf
+$ENDCMP
+#
+#End Doc Library
