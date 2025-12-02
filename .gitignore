@@ -5,3 +5,6 @@
 .vscode/ipch
 lib/iso14429
 lib/bcc
+compile_commands.json
+hardware/HV ECU-backups/
+.DS_Store
