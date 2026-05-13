@@ -105,6 +105,13 @@ class BatteryManagementSystem {
   uint32_t last_fault_check;
   uint32_t fault_check_interval_ms;
 
+  // Temperature tracking — AN3/AN4 are the thermistors on each module
+  // Values in degrees C; NaN (~-1000.0f) = not yet decoded
+  float bcc0_temp_an3_c;
+  float bcc0_temp_an4_c;
+  float bcc1_temp_an3_c;
+  float bcc1_temp_an4_c;
+
   // Initialization flag and communication tracking
   bool hardware_initialized;
   bool bcc0_initialized;
@@ -172,6 +179,8 @@ class BatteryManagementSystem {
   bool measure_stack_voltage(BatteryCellController *bcc, uint32_t *stack_voltage);
   bool read_fault_status(BatteryCellController *bcc);
   void check_faults();
+  void configure_an_thresholds(BatteryCellController *bcc);
+  static float an_voltage_to_temp_c(uint32_t an_uv);
   void calculate_cell_balance_requirements(uint32_t *cell_voltages, uint8_t cell_count,
                                            uint8_t *cells_to_balance);
   void apply_cell_balancing(BatteryCellController *bcc, uint8_t *cells_to_balance,

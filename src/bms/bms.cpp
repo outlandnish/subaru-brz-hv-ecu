@@ -87,6 +87,10 @@ BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *co
   has_temperature_fault = false;
   has_cb_open_fault = false;
   has_cb_short_fault = false;
+  bcc0_temp_an3_c = -1000.0f;
+  bcc0_temp_an4_c = -1000.0f;
+  bcc1_temp_an3_c = -1000.0f;
+  bcc1_temp_an4_c = -1000.0f;
   last_fault_check = 0;
   fault_check_interval_ms = Param::GetInt(Param::faultCheckInt);
 
@@ -455,6 +459,53 @@ void BatteryManagementSystem::master_task_loop() {
       }
     }
 
+    // 1Hz serial status dump
+    static uint32_t last_status_print = 0;
+    uint32_t now = millis();
+    if (now - last_status_print >= 1000) {
+      last_status_print = now;
+      uint32_t total_stack_uv = snap_stack_uv + snap_stack_bcc1_uv;
+      debug_printf("--- BMS status ---\r\n");
+      debug_printf("  State: %d  SOC: %.1f%%  Stack: %.3fV\r\n",
+        current_state, (double)get_soc(), (double)(total_stack_uv / 1000000.0f));
+      for (uint8_t i = 0; i < snap_cell_count; i++) {
+        debug_printf("  Cell%02d: %.3fV\r\n", i + 1, (double)(snap_voltages[i] / 1000000.0f));
+      }
+      debug_printf("  Faults: OV=%d UV=%d Temp=%d(AN_OT_UT=0x%04X) CBOpen=%d CBShort=%d\r\n",
+        has_overvoltage_fault, has_undervoltage_fault,
+        has_temperature_fault, fault_status[BCC_FS_AN_OT_UT],
+        has_cb_open_fault, has_cb_short_fault);
+      uint32_t an_uv[BCC_GPIO_INPUT_CNT] = {};
+      if (bcc0->get_an_voltages(BCC_CID_DEV1, an_uv) == BCC_STATUS_SUCCESS) {
+        debug_printf("  BCC0 AN: ");
+        for (uint8_t i = 0; i < BCC_GPIO_INPUT_CNT; i++)
+          debug_printf("AN%d=%.3fV ", i, (double)(an_uv[i] / 1000000.0f));
+        debug_printf("\r\n");
+      }
+      if (bcc1_initialized && bcc1 != nullptr) {
+        uint16_t bcc1_faults[11] = {};
+        bcc1->get_fault_status(BCC_CID_DEV1, bcc1_faults);
+        debug_printf("  BCC1 Faults: OV=%d UV=%d Temp=%d(AN_OT_UT=0x%04X)\r\n",
+          (bcc1_faults[BCC_FS_CELL_OV] != 0),
+          (bcc1_faults[BCC_FS_CELL_UV] != 0),
+          (bcc1_faults[BCC_FS_AN_OT_UT] != 0),
+          bcc1_faults[BCC_FS_AN_OT_UT]);
+        uint32_t an1_uv[BCC_GPIO_INPUT_CNT] = {};
+        if (bcc1->get_an_voltages(BCC_CID_DEV1, an1_uv) == BCC_STATUS_SUCCESS) {
+          debug_printf("  BCC1 AN: ");
+          for (uint8_t i = 0; i < BCC_GPIO_INPUT_CNT; i++)
+            debug_printf("AN%d=%.3fV ", i, (double)(an1_uv[i] / 1000000.0f));
+          debug_printf("\r\n");
+        }
+      }
+      if (ivt_shunt) {
+        debug_printf("  IVT: %.2fA  %.2fV  alive=%d\r\n",
+          (double)ivt_shunt->get_current(),
+          (double)ivt_shunt->get_voltage(),
+          ivt_shunt->is_alive());
+      }
+    }
+
     // Update LED status
     update_status_leds();
 
@@ -480,9 +531,23 @@ void BatteryManagementSystem::bcc0_monitor_task_loop() {
     return;
   }
   debug_println("BCC0: Ready");
+  configure_an_thresholds(bcc0);
   bcc0_initialized = true;
   hardware_initialized = true;
   current_state = BMS_Idle;
+
+  // Dump fuse mirror once at startup
+  debug_println("BCC0 fuse mirror:");
+  for (uint8_t addr = 0x00; addr <= 0x1F; addr++) {
+    uint16_t val = 0;
+    bcc_status_t err2 = bcc0->read_fuse_mirror(BCC_CID_DEV1, addr, &val);
+    if (err2 == BCC_STATUS_SUCCESS) {
+      debug_printf("  [0x%02X] = 0x%04X\r\n", addr, val);
+    } else {
+      debug_printf("  [0x%02X] error %d\r\n", addr, err2);
+      break;
+    }
+  }
 
   while (true) {
     if (hardware_initialized && current_state != BMS_Error) {
@@ -550,6 +615,7 @@ void BatteryManagementSystem::bcc1_monitor_task_loop() {
     return;
   }
   debug_println("BCC1: Ready");
+  configure_an_thresholds(bcc1);
   bcc1_initialized = true;
 
   const uint8_t CELL_OFFSET = bcc0_config->device_count * bcc0_config->cell_count;
@@ -587,7 +653,6 @@ bool BatteryManagementSystem::measure_cell_voltages(BatteryCellController *bcc, 
   // Start conversion
   error = bcc->start_conversion_global_async(0x0717);
   if (error != BCC_STATUS_SUCCESS) {
-    debug_printf("Error starting conversion: %d\r\n", error);
     return false;
   }
 
@@ -633,6 +698,23 @@ void BatteryManagementSystem::check_faults() {
 
   // Check for temperature faults (AN_OT_UT_FLT register, index 5)
   has_temperature_fault = (fault_status[BCC_FS_AN_OT_UT] != 0);
+}
+
+void BatteryManagementSystem::configure_an_thresholds(BatteryCellController *bcc) {
+  // Disable OT/UT fault monitoring on all AN pins until NTC is characterised.
+  // Default OT=1.16V trips on thermistor pins (AN3/AN4 ~0.45V at room temp).
+  // TODO: restore proper thresholds once NTC B-value and pullup resistor are known.
+  for (uint8_t i = 0; i <= 6; i++) {
+    bcc->set_temperature_thresholds(BCC_CID_DEV1, i, 0x0000, 0x3FFF);
+  }
+}
+
+// Stub NTC conversion — returns raw voltage in °C-equivalent until characterised
+// AN voltage is ratiometric to VCOM (~3.3V); AN3/AN4 ~0.457V at room temp
+// TODO: replace with Steinhart-Hart once NTC part and pullup resistor are identified
+float BatteryManagementSystem::an_voltage_to_temp_c(uint32_t an_uv) {
+  (void)an_uv;
+  return -1000.0f;  // sentinel: not yet decoded
 }
 
 void BatteryManagementSystem::calculate_cell_balance_requirements(uint32_t *cell_voltages, uint8_t cell_count,
