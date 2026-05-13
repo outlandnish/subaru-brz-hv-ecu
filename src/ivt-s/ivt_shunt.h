@@ -81,6 +81,15 @@ private:
   long previous_as;  // Previous ampere-seconds
   long previous_wh;  // Previous watt-hours
 
+  // Error tracking
+  uint8_t message_counter;
+  uint8_t last_message_counter;
+  bool counter_error;
+  bool system_error;
+  bool any_measurement_error;
+  bool precision_error;
+  bool overcurrent_flag;
+
   // Message handlers
   void handle_0x521_current(CAN_FRAME *frame);
   void handle_0x522_voltage(CAN_FRAME *frame);
@@ -96,4 +105,6 @@ private:
   void send_store();
   void init_current_mode();
   void print_frame(CAN_FRAME *frame);
+  void parse_error_status(uint8_t status_byte);
+  bool validate_muxid(uint8_t muxid, uint8_t expected, const char* msg_name);
 };

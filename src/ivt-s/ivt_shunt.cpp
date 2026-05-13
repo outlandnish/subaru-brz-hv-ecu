@@ -1,6 +1,5 @@
 #include "ivt_shunt.h"
-
-#define Serial SerialUSB
+#include "debug_serial.h"
 
 IVTShunt::IVTShunt()
   : can(nullptr),
@@ -17,7 +16,14 @@ IVTShunt::IVTShunt()
     debug_enabled(true),
     first_frame(true),
     previous_as(0),
-    previous_wh(0) {
+    previous_wh(0),
+    overcurrent_flag(false),
+    precision_error(false),
+    any_measurement_error(false),
+    system_error(false),
+    counter_error(false),
+    message_counter(0),
+    last_message_counter(0xFF) {
 }
 
 IVTShunt::~IVTShunt() {
@@ -94,6 +100,9 @@ void IVTShunt::gotFrame(CAN_FRAME *frame, int mailbox) {
 void IVTShunt::handle_0x521_current(CAN_FRAME *frame) {
   // Current in milliamps (32-bit signed, big-endian)
   // Byte 0: MuxID, Byte 1: counter/status, Bytes 2-5: value (big-endian)
+  if (!validate_muxid(frame->data.uint8[0], 0x00, "Current")) return;
+  parse_error_status(frame->data.uint8[1]);
+
   int32_t milliamps = (int32_t)((frame->data.uint8[2] << 24) |
                                  (frame->data.uint8[3] << 16) |
                                  (frame->data.uint8[4] << 8) |
@@ -105,6 +114,9 @@ void IVTShunt::handle_0x521_current(CAN_FRAME *frame) {
 void IVTShunt::handle_0x522_voltage(CAN_FRAME *frame) {
   // Voltage in millivolts (32-bit signed, big-endian)
   // Byte 0: MuxID, Byte 1: counter/status, Bytes 2-5: value (big-endian)
+  if (!validate_muxid(frame->data.uint8[0], 0x01, "Voltage1")) return;
+  parse_error_status(frame->data.uint8[1]);
+
   int32_t millivolts = (int32_t)((frame->data.uint8[2] << 24) |
                                   (frame->data.uint8[3] << 16) |
                                   (frame->data.uint8[4] << 8) |
@@ -116,6 +128,9 @@ void IVTShunt::handle_0x522_voltage(CAN_FRAME *frame) {
 void IVTShunt::handle_0x523_voltage2(CAN_FRAME *frame) {
   // Voltage 2 in millivolts (32-bit signed, big-endian)
   // Byte 0: MuxID, Byte 1: counter/status, Bytes 2-5: value (big-endian)
+  if (!validate_muxid(frame->data.uint8[0], 0x02, "Voltage2")) return;
+  parse_error_status(frame->data.uint8[1]);
+
   int32_t millivolts = (int32_t)((frame->data.uint8[2] << 24) |
                                   (frame->data.uint8[3] << 16) |
                                   (frame->data.uint8[4] << 8) |
@@ -127,6 +142,9 @@ void IVTShunt::handle_0x523_voltage2(CAN_FRAME *frame) {
 void IVTShunt::handle_0x524_voltage3(CAN_FRAME *frame) {
   // Voltage 3 in millivolts (32-bit signed, big-endian)
   // Byte 0: MuxID, Byte 1: counter/status, Bytes 2-5: value (big-endian)
+  if (!validate_muxid(frame->data.uint8[0], 0x03, "Voltage3")) return;
+  parse_error_status(frame->data.uint8[1]);
+
   int32_t millivolts = (int32_t)((frame->data.uint8[2] << 24) |
                                   (frame->data.uint8[3] << 16) |
                                   (frame->data.uint8[4] << 8) |
@@ -138,6 +156,9 @@ void IVTShunt::handle_0x524_voltage3(CAN_FRAME *frame) {
 void IVTShunt::handle_0x525_temperature(CAN_FRAME *frame) {
   // Temperature in deci-degrees C (32-bit signed, big-endian)
   // Byte 0: MuxID, Byte 1: counter/status, Bytes 2-5: value (big-endian)
+  if (!validate_muxid(frame->data.uint8[0], 0x04, "Temperature")) return;
+  parse_error_status(frame->data.uint8[1]);
+
   int32_t deci_degrees = (int32_t)((frame->data.uint8[2] << 24) |
                                     (frame->data.uint8[3] << 16) |
                                     (frame->data.uint8[4] << 8) |
@@ -149,6 +170,9 @@ void IVTShunt::handle_0x525_temperature(CAN_FRAME *frame) {
 void IVTShunt::handle_0x526_power(CAN_FRAME *frame) {
   // Power in watts (32-bit signed, big-endian)
   // Byte 0: MuxID, Byte 1: counter/status, Bytes 2-5: value (big-endian)
+  if (!validate_muxid(frame->data.uint8[0], 0x05, "Power")) return;
+  parse_error_status(frame->data.uint8[1]);
+
   int32_t watts = (int32_t)((frame->data.uint8[2] << 24) |
                              (frame->data.uint8[3] << 16) |
                              (frame->data.uint8[4] << 8) |
@@ -160,6 +184,9 @@ void IVTShunt::handle_0x526_power(CAN_FRAME *frame) {
 void IVTShunt::handle_0x527_amphours(CAN_FRAME *frame) {
   // Ampere-seconds (32-bit signed, big-endian)
   // Byte 0: MuxID, Byte 1: counter/status, Bytes 2-5: value (big-endian)
+  if (!validate_muxid(frame->data.uint8[0], 0x06, "AmpHours")) return;
+  parse_error_status(frame->data.uint8[1]);
+
   int32_t as = (int32_t)((frame->data.uint8[2] << 24) |
                           (frame->data.uint8[3] << 16) |
                           (frame->data.uint8[4] << 8) |
@@ -176,6 +203,9 @@ void IVTShunt::handle_0x527_amphours(CAN_FRAME *frame) {
 void IVTShunt::handle_0x528_kwh(CAN_FRAME *frame) {
   // Watt-hours (32-bit signed, big-endian)
   // Byte 0: MuxID, Byte 1: counter/status, Bytes 2-5: value (big-endian)
+  if (!validate_muxid(frame->data.uint8[0], 0x07, "kWh")) return;
+  parse_error_status(frame->data.uint8[1]);
+
   int32_t wh = (int32_t)((frame->data.uint8[2] << 24) |
                           (frame->data.uint8[3] << 16) |
                           (frame->data.uint8[4] << 8) |
@@ -315,4 +345,66 @@ void IVTShunt::print_frame(CAN_FRAME *frame) {
 bool IVTShunt::is_alive() const {
   // Consider alive if we've received a message in the last 2 seconds
   return (millis() - last_message_time) < 2000;
+}
+
+void IVTShunt::parse_error_status(uint8_t status_byte) {
+  // Byte 1 format:
+  // Lower nibble (bits 0-3): Message counter (0-15)
+  // Upper nibble (bits 4-7): Error flags
+  //   bit 4: Overcurrent (OCS)
+  //   bit 5: Precision error / out of range / measurement error
+  //   bit 6: Any measurement error
+  //   bit 7: System error
+
+  // Update and validate message counter
+  uint8_t counter = status_byte & 0x0F;
+  if (last_message_counter != 0xFF) {
+    uint8_t expected_counter = (last_message_counter + 1) % 16;
+    if (counter != expected_counter) {
+      counter_error = true;
+      if (debug_enabled) {
+        Serial.printf("IVT: WARNING - Counter jump detected (expected %d, got %d)\r\n",
+                      expected_counter, counter);
+      }
+    } else {
+      counter_error = false;
+    }
+  }
+  last_message_counter = counter;
+  message_counter = counter;
+
+  // Extract error flags from upper nibble
+  uint8_t error_flags = (status_byte >> 4) & 0x0F;
+  
+  system_error = (error_flags & 0x08) != 0;
+  any_measurement_error = (error_flags & 0x04) != 0;
+  precision_error = (error_flags & 0x02) != 0;
+  overcurrent_flag = (error_flags & 0x01) != 0;
+
+  // Log critical errors
+  if (debug_enabled) {
+    if (system_error) {
+      Serial.println("IVT: ERROR - System error! Sensor functionality not ensured!");
+    }
+    if (any_measurement_error) {
+      Serial.println("IVT: ERROR - Measurement error detected!");
+    }
+    if (precision_error) {
+      Serial.println("IVT: WARNING - Precision error or out of range!");
+    }
+    if (overcurrent_flag) {
+      Serial.println("IVT: WARNING - Overcurrent condition!");
+    }
+  }
+}
+
+bool IVTShunt::validate_muxid(uint8_t muxid, uint8_t expected, const char* msg_name) {
+  if (muxid != expected) {
+    if (debug_enabled) {
+      Serial.printf("IVT: ERROR - MuxID mismatch for %s (expected 0x%02X, got 0x%02X)\r\n",
+                    msg_name, expected, muxid);
+    }
+    return false;
+  }
+  return true;
 }
