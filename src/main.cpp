@@ -10,6 +10,9 @@
 #include <Adafruit_NeoPixel.h>
 #include <ArduinoJson.h>
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdouble-promotion"
+
 Adafruit_NeoPixel strip = Adafruit_NeoPixel(STATUS_LED_COUNT, STATUS_LEDS, NEO_GRB + NEO_KHZ800);
 // DebugSerial is defined in src/debug_serial.cpp; extern declaration via debug_serial.h
 
@@ -61,7 +64,6 @@ int get_json_byte(uint32_t offset) {
 // CAN RX polling task - reads from hardware and puts messages into queues
 void can_rx_task(void *pvParameters) {
   CAN_FRAME frame;
-  static uint32_t last_debug = 0;
   static uint32_t m3_read_count = 0;
   static uint32_t hv_read_count = 0;
 
@@ -820,6 +822,7 @@ void setup() {
 #ifdef DEBUG_WAIT_FOR_SERIAL
   delay(2000);
 #endif
+
   debug_println("=== BMS Charging System for Dual 6S2P Packs ===");
   debug_println();
 
