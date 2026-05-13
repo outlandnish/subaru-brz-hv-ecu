@@ -44,6 +44,7 @@ header = f"""\
 #define FW_VERSION_MAJOR {major}
 #define FW_VERSION_MINOR {minor}
 #define FW_VERSION_PATCH {patch}
+#define FW_VERSION_BUILD 0
 """
 
 with open(OUT, "w") as f:
