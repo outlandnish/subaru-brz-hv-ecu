@@ -95,7 +95,7 @@ Frames 0x351–0x35C do **not** include a CRC (ecosystem format).
 
 ### 6.1 Compile-time parameters (set before flashing)
 
-These are loaded from libopeninv parameter storage at boot via `Param::LoadDefaults()` and can be changed by writing to parameter storage. There is currently **no runtime configuration interface** — UDS (§10 of the protocol spec) is planned but not yet implemented.
+Parameters are stored in non-volatile memory and loaded at boot. They can be updated by writing to parameter storage before flashing. There is currently **no runtime configuration interface** — UDS (§10 of the protocol spec) is planned but not yet implemented.
 
 #### BCC Hardware
 
@@ -152,15 +152,15 @@ These are loaded from libopeninv parameter storage at boot via `Param::LoadDefau
 
 ### 6.2 UDS configuration (planned — not yet implemented)
 
-The protocol spec defines a full UDS interface (0x7E0 / 0x7E8) for runtime configuration of balancing parameters, protection thresholds, contactor roles, SOH, and chain topology. This is not implemented in the current firmware. All configuration is currently done via parameter storage before flashing.
+The protocol spec defines a full UDS interface (0x7E0 / 0x7E8) for runtime configuration of balancing parameters, protection thresholds, contactor roles, SOH, and chain topology. This is not implemented in the current firmware. All configuration is currently done at flash time.
 
-See `EXTERNAL_BMS_PLAN.md §10` for the planned DID map.
+See `EXTERNAL_BMS_PLAN.md §11` for the planned DID map.
 
 ---
 
-## 7. Read-only spot values
+## 7. Read-only diagnostic values
 
-These are internal libopeninv spot values updated by the BMS and readable via the parameter interface (not broadcast over CAN).
+These values are maintained internally by the BMS and readable via the parameter interface (not broadcast over CAN).
 
 | Value | Unit | Description |
 |---|---|---|
@@ -177,7 +177,7 @@ These are internal libopeninv spot values updated by the BMS and readable via th
 | `bcc0Initialized` | — | BCC chain 0 init status |
 | `bcc1Initialized` | — | BCC chain 1 init status |
 | `faultStatus` | — | Raw BCC fault register bitmask |
-| `lasterr` | — | Last fault code (see param_prj.h for encoding) |
+| `lasterr` | — | Last fault code |
 | `ivtCurrent` | A | IVT-S current (raw CAN value) |
 | `ivtVoltage1` | V | IVT-S V1 (pack side) |
 | `ivtVoltage2` | V | IVT-S V2 (inverter side) |
