@@ -1,8 +1,7 @@
 #include "dma_config.h"
+#include "debug_serial.h"
 
 #if defined(BRZ_HV_ECU)
-
-#define Serial SerialUSB
 
 // Per-SPI instance DMA handles (separate for each SPI peripheral)
 static DMA_HandleTypeDef hdma_spi1_tx;

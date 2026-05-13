@@ -5,7 +5,7 @@
 #include "BatteryCellController.h"
 #include "bms/bms.h"
 #include "hal/dma_config.h"
-#include "hal/hv-ecu-v0-pins.h"
+#include "hal/hv-ecu-v1-pins.h"
 #include "can.h"
 #include "taycan.h"
 #include "params.h"
@@ -13,8 +13,7 @@
 #include "canhardware_arduino.h"
 #include "canmap.h"
 #include "cansdo.h"
-
-#define Serial SerialUSB
+#include "debug_serial.h"
 
 // Firmware version encoding: 0xMMmmppbb
 // MM = Major (0-255), mm = Minor (0-255), pp = Patch (0-255), bb = Build (0-255)
