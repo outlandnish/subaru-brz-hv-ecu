@@ -4,8 +4,9 @@
 #include "BatteryCellController.h"
 #include "SPI.h"
 #include "hal/dma_config.h"
-#include <Adafruit_NeoPixel.h>
 #include <HardwareTimer.h>
+
+class Adafruit_NeoPixel;  // forward declaration — full header only needed in bms.cpp
 #include "can.h"
 #include "ivt-s/ivt_shunt.h"
 #include "chademo/chademo.h"
@@ -281,6 +282,15 @@ class BatteryManagementSystem {
     // IVT and CHAdeMO status
     IVTShunt* get_ivt_shunt() const { return ivt_shunt; }
     CHAdeMOController* get_chademo() const { return chademo; }
+
+    uint8_t get_balance_mask(uint8_t module_idx) const {
+      const uint8_t base = module_idx * 6;
+      uint8_t mask = 0;
+      for (uint8_t c = 0; c < 6 && base + c < BCC_MAX_CELLS; c++) {
+        if (cells_to_balance[base + c]) mask |= (1 << c);
+      }
+      return mask;
+    }
 
     // SOC and current calculation
     uint8_t get_soc() const { return (uint8_t)current_soc_percent; }
