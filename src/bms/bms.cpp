@@ -1,4 +1,5 @@
 #include "bms.h"
+#include <Adafruit_NeoPixel.h>
 #include "Arduino.h"
 #include "debug_serial.h"
 
