@@ -12,24 +12,27 @@
  *   Monitor with: pio device monitor
  */
 
+#include "debug_serial.h"
 #include "Arduino.h"
 #include "SPI.h"
 #include "TPLSPI.h"
 #include "BatteryCellController.h"
 #include "bcc/bcc_config.h"
 #include "hal/dma_config.h"
-#include "hal/hv-ecu-v0-pins.h"
+#include "hal/hv-ecu-v1-pins.h"
 #include <STM32FreeRTOS.h>
 #include <HardwareTimer.h>
-
-#define Serial SerialUSB
+#include "../lib/can/can.h"
+#include "ivt-s/ivt_shunt.h"
 
 // Configuration
 #define DEVICE_COUNT 1          // Single device on the chain
 #define CELL_COUNT 6            // 6S battery
-#define TARGET_VOLTAGE_UV 21000000  // 21V in microvolts (3.5V per cell)
 #define BALANCE_THRESHOLD_UV 10000  // 10mV in microvolts
-#define MEASUREMENT_INTERVAL_MS 1000  // Measure every 1 second
+#define MEASUREMENT_INTERVAL_MS 100   // Measure every 100ms (must be < 256ms,
+                                       // the max BCC SYS_CFG2 TIMEOUT_COMM; otherwise
+                                       // the MC33772 sets COM_LOSS and stops responding)
+#define JSON_INTERVAL_MS 1000          // Emit JSON status at 1Hz
 #define BALANCING_TIMER_MIN 5   // Balance for 5 minutes at a time
 
 // Contactor PWM settings
@@ -57,13 +60,23 @@ BatteryCellController *bcc0;
 SPIClass *bcc0_tx_spi, *bcc0_rx_spi;
 bcc_device_t devices_0[DEVICE_COUNT];
 
+// CAN bus and IVT-S shunt
+CANBus *hv_can = nullptr;
+IVTShunt *ivt_shunt = nullptr;
+
 // State variables
 ChargeState current_state = STATE_INIT;
 uint32_t cell_voltages_uv[CELL_COUNT];
+float temperature_an2_c = 0.0f;  // Thermistor 1 temperature
+float temperature_an3_c = 0.0f;  // Thermistor 2 temperature
 uint32_t last_measurement_time = 0;
+uint32_t last_json_time = 0;
 bool contactor_enabled = false;
 bool hardware_initialized = false;
 uint32_t last_contactor_cycle_time = 0;  // Track when we last cycled contactors
+
+// Target voltage (default 21V = 3.5V per cell)
+uint32_t target_voltage_uv = 21000000;
 
 // Calibration data from fuse mirror
 struct CalibrationData {
@@ -87,7 +100,9 @@ void enable_contactor();
 void disable_contactor();
 bool initialize_bcc();
 bool measure_voltages();
+void measure_temperatures();
 void print_voltages();
+void print_json_status();
 uint32_t get_total_voltage();
 uint32_t get_max_cell_delta();
 void apply_cell_balancing();
@@ -106,12 +121,11 @@ void enable_contactor() {
     Serial.println("Enabling contactor (charging ON)");
 
     // Enable the H-bridge driver
-    digitalWrite(CONTACTOR_NSLEEP_PIN, HIGH);
+    digitalWrite(HV_CONTACTOR_NSLEEP_PIN, HIGH);
     delay(10);
 
     // Set contactor 2 LOW (constant)
-    digitalWrite(CONTACTOR_2_PIN, LOW);
-
+    digitalWrite(HV_CONTACTOR_2_PIN, LOW);
     // Start PWM on contactor 1 at 100% to engage (pull-in)
     contactor_timer->setCaptureCompare(contactor_channel, CONTACTOR_ENGAGE_DUTY, PERCENT_COMPARE_FORMAT);
     contactor_timer->resume();
@@ -134,9 +148,9 @@ void cycle_contactor() {
   // Disable contactor
   contactor_timer->pause();
   contactor_timer->setCaptureCompare(contactor_channel, 0, PERCENT_COMPARE_FORMAT);
-  digitalWrite(CONTACTOR_2_PIN, LOW);
+  digitalWrite(HV_CONTACTOR_2_PIN, LOW);
   delay(10);
-  digitalWrite(CONTACTOR_NSLEEP_PIN, LOW);
+  digitalWrite(HV_CONTACTOR_NSLEEP_PIN, LOW);
 
   // Pause for 1 second
   Serial.println("Pausing for 1 second...");
@@ -144,9 +158,9 @@ void cycle_contactor() {
 
   // Re-enable contactor
   Serial.println("Re-enabling contactor");
-  digitalWrite(CONTACTOR_NSLEEP_PIN, HIGH);
+  digitalWrite(HV_CONTACTOR_NSLEEP_PIN, HIGH);
   delay(10);
-  digitalWrite(CONTACTOR_2_PIN, LOW);
+  digitalWrite(HV_CONTACTOR_2_PIN, LOW);
 
   // Start PWM at 100% to engage
   contactor_timer->setCaptureCompare(contactor_channel, CONTACTOR_ENGAGE_DUTY, PERCENT_COMPARE_FORMAT);
@@ -167,20 +181,36 @@ void disable_contactor() {
     // Stop PWM
     contactor_timer->pause();
     contactor_timer->setCaptureCompare(contactor_channel, 0, PERCENT_COMPARE_FORMAT);
-    digitalWrite(CONTACTOR_2_PIN, LOW);
+    digitalWrite(HV_CONTACTOR_2_PIN, LOW);
     delay(10);
 
     // Disable the H-bridge driver
-    digitalWrite(CONTACTOR_NSLEEP_PIN, LOW);
-
+    digitalWrite(HV_CONTACTOR_NSLEEP_PIN, LOW);
     contactor_enabled = false;
   }
 }
 
 void monitor_task(void *pvParameters) {
   // Hardware initialization in task context (like BMS)
-  Serial.println("\n=== Initializing BCC0 ===");
+  Serial.println("\n=== Initializing Hardware ===");
   vTaskDelay(pdMS_TO_TICKS(2000)); // Wait for system to stabilize
+
+  // Initialize HV CAN bus (500kbps for IVT shunt)
+  Serial.println("Initializing HV CAN bus...");
+  hv_can = new CANBus(HV_CAN_RX, HV_CAN_TX);
+  hv_can->begin(500000);
+  Serial.println("HV CAN: Ready");
+
+  // Initialize IVT-S current/voltage shunt
+  Serial.println("Initializing IVT-S shunt...");
+  ivt_shunt = new IVTShunt();
+  ivt_shunt->begin(hv_can);
+  ivt_shunt->set_debug(false);  // Disable verbose CAN debug
+  Serial.println("IVT-S: Ready");
+  Serial.println();
+
+  // Initialize BCC0
+  Serial.println("Initializing BCC0...");
 
   // Setup device type (MC33772C for 6-cell battery)
   devices_0[0] = BCC_DEVICE_MC33772;
@@ -196,6 +226,8 @@ void monitor_task(void *pvParameters) {
 
   pinMode(BCC0_TX_CS, OUTPUT);
   digitalWrite(BCC0_TX_CS, HIGH);
+
+  Serial.println("Starting BCC0...");
 
   // Initialize BCC hardware
   bcc_status_t error = bcc0->begin(nullptr);
@@ -216,9 +248,21 @@ void monitor_task(void *pvParameters) {
 
   // Main monitoring loop
   while (true) {
+    // Process CAN messages for IVT-S
+    if (hv_can != nullptr && hv_can->available()) {
+      CAN_FRAME frame;
+      while (hv_can->read(frame)) {
+        if (ivt_shunt != nullptr) {
+          ivt_shunt->process_can_frame(&frame);
+        }
+      }
+    }
+
     if (hardware_initialized && current_state != STATE_ERROR && current_state != STATE_SLEEP) {
-      // Always measure voltages (like BMS does)
+      // Always measure voltages and temperatures
       if (measure_voltages()) {
+        measure_temperatures();
+        
         // Update charging state if we're actively charging
         if (current_state != STATE_IDLE && current_state != STATE_COMPLETE) {
           uint32_t now = millis();
@@ -227,21 +271,31 @@ void monitor_task(void *pvParameters) {
             update_charging_state();
           }
         }
+        
+        // Output JSON status for web app at 1Hz
+        uint32_t now = millis();
+        if (now - last_json_time >= JSON_INTERVAL_MS) {
+          last_json_time = now;
+          print_json_status();
+        }
+      }
+    }
 
-        // Check if we need to cycle the contactor (only while charging)
-        if (current_state == STATE_CHARGING && contactor_enabled) {
+    // Contactor cycling disabled for web app control
+    /*
+    // Check if we need to cycle the contactor (only while charging)
+    if (current_state == STATE_CHARGING && contactor_enabled) {
           uint32_t now = millis();
           // Handle millis() rollover (happens every ~49 days)
           uint32_t elapsed = (now >= last_contactor_cycle_time)
                            ? (now - last_contactor_cycle_time)
                            : (0xFFFFFFFF - last_contactor_cycle_time + now + 1);
 
-          if (elapsed >= CONTACTOR_CYCLE_INTERVAL_MS) {
-            cycle_contactor();
-          }
-        }
+      if (elapsed >= CONTACTOR_CYCLE_INTERVAL_MS) {
+        cycle_contactor();
       }
     }
+    */
 
     vTaskDelay(pdMS_TO_TICKS(MEASUREMENT_INTERVAL_MS));
   }
@@ -249,7 +303,7 @@ void monitor_task(void *pvParameters) {
 
 void console_task(void *pvParameters) {
   Serial.println("\n=== Simple Charger Console ===");
-  Serial.println("Commands: 'start', 'stop', 'end', 'status', 'dump', 'reset'");
+  Serial.println("Commands: 'start', 'stop', 'end', 'status', 'dump', 'reset', 'get_voltage', 'set_voltage <uV>'");
   Serial.println();
 
   String inputBuffer = "";
@@ -319,6 +373,26 @@ void console_task(void *pvParameters) {
             Serial.flush();  // Ensure message is sent before reset
             delay(100);
             NVIC_SystemReset();
+          } else if (inputBuffer == "get_voltage") {
+            Serial.printf("\nTarget voltage: %lu uV (%.3f V, %.4f V per cell)\r\n",
+                         target_voltage_uv,
+                         target_voltage_uv / 1000000.0f,
+                         target_voltage_uv / 1000000.0f / CELL_COUNT);
+          } else if (inputBuffer.startsWith("set_voltage ")) {
+            String voltageStr = inputBuffer.substring(12);
+            voltageStr.trim();
+            uint32_t newVoltage = voltageStr.toInt();
+            
+            // Validate range (15V to 25.2V in microvolts)
+            if (newVoltage >= 15000000 && newVoltage <= 25200000) {
+              target_voltage_uv = newVoltage;
+              Serial.printf("\nTarget voltage set to: %lu uV (%.3f V, %.4f V per cell)\r\n",
+                           target_voltage_uv,
+                           target_voltage_uv / 1000000.0f,
+                           target_voltage_uv / 1000000.0f / CELL_COUNT);
+            } else {
+              Serial.printf("\nERROR: Voltage out of range. Must be 15000000-25200000 uV (15-25.2V)\r\n");
+            }
           } else if (inputBuffer.length() > 0) {
             Serial.printf("\nUnknown command: %s\r\n", inputBuffer.c_str());
           }
@@ -361,7 +435,67 @@ bool measure_voltages() {
   return true;
 }
 
+void measure_temperatures() {
+  // Read AN2 and AN3 analog voltages from BCC (in microvolts)
+  uint32_t voltage_an2_uv = 0, voltage_an3_uv = 0;
+  
+  bcc_status_t error = bcc0->get_an_voltage(BCC_CID_DEV1, 2, &voltage_an2_uv);  // AN2
+  if (error == BCC_STATUS_SUCCESS) {
+    float voltage_an2 = voltage_an2_uv / 1000000.0f;
+    
+    // Porsche Taycan NTC temperature conversion
+    // Calibration: 0.456V = 23°C (room temperature)
+    // Circuit: 3.3V → 10k pull-up → V_measured → NTC → GND
+    // Calculate NTC resistance from voltage divider
+    if (voltage_an2 > 0.01f && voltage_an2 < 3.29f) {
+      float r_ntc = (10000.0f * voltage_an2) / (3.3f - voltage_an2);
+      
+      // Steinhart-Hart B-parameter equation
+      // Using B=3950 (typical automotive NTC) and R0=1600 ohms at T0=23°C (296.15K)
+      // This is calibrated from hardware: 0.456V → 1600 ohms → 23°C
+      float inv_temp = 1.0f / 296.15f + (1.0f / 3950.0f) * logf(r_ntc / 1600.0f);
+      temperature_an2_c = (1.0f / inv_temp) - 273.15f;
+      
+      // Clamp to reasonable automotive battery range
+      if (temperature_an2_c < -40.0f) temperature_an2_c = -40.0f;
+      if (temperature_an2_c > 85.0f) temperature_an2_c = 85.0f;
+    } else {
+      temperature_an2_c = 0.0f;  // Invalid reading
+    }
+  }
+  
+  error = bcc0->get_an_voltage(BCC_CID_DEV1, 3, &voltage_an3_uv);  // AN3
+  if (error == BCC_STATUS_SUCCESS) {
+    float voltage_an3 = voltage_an3_uv / 1000000.0f;
+    
+    if (voltage_an3 > 0.01f && voltage_an3 < 3.29f) {
+      float r_ntc = (10000.0f * voltage_an3) / (3.3f - voltage_an3);
+      float inv_temp = 1.0f / 296.15f + (1.0f / 3950.0f) * logf(r_ntc / 1600.0f);
+      temperature_an3_c = (1.0f / inv_temp) - 273.15f;
+      
+      if (temperature_an3_c < -40.0f) temperature_an3_c = -40.0f;
+      if (temperature_an3_c > 85.0f) temperature_an3_c = 85.0f;
+    } else {
+      temperature_an3_c = 0.0f;
+    }
+  }
+}
+
 void print_voltages() {
+  // Print IVT-S measurements first
+  if (ivt_shunt != nullptr && ivt_shunt->is_alive()) {
+    Serial.println("\n=== IVT-S Measurements ===");
+    Serial.printf("  Current:     %.2f A\r\n", ivt_shunt->get_current());
+    Serial.printf("  Voltage:     %.2f V\r\n", ivt_shunt->get_voltage());
+    Serial.printf("  Power:       %.2f kW\r\n", ivt_shunt->get_power());
+    Serial.printf("  Temperature: %.1f °C\r\n", ivt_shunt->get_temperature());
+    Serial.printf("  Amp-Hours:   %.3f Ah\r\n", ivt_shunt->get_amp_hours());
+    Serial.printf("  Energy:      %.3f kWh\r\n", ivt_shunt->get_kilowatt_hours());
+  } else {
+    Serial.println("\n=== IVT-S Measurements ===");
+    Serial.println("  Status: OFFLINE");
+  }
+
   Serial.println("\n=== Cell Voltages ===");
   uint32_t total_voltage = 0;
   uint32_t total_voltage_cal = 0;
@@ -396,6 +530,86 @@ void print_voltages() {
 
   Serial.printf("Min: %.4f V  |  Max: %.4f V\r\n",
                 min_v / 1000000.0f, max_v / 1000000.0f);
+  
+  // Print temperatures
+  Serial.println("\n=== Battery Temperatures ===");
+  
+  // Read and print raw AN voltages
+  uint32_t raw_an2_uv = 0, raw_an3_uv = 0;
+  if (bcc0->get_an_voltage(BCC_CID_DEV1, 2, &raw_an2_uv) == BCC_STATUS_SUCCESS) {
+    Serial.printf("  AN2 Raw: %.3f V  (%lu uV)\r\n", raw_an2_uv / 1000000.0f, raw_an2_uv);
+  }
+  if (bcc0->get_an_voltage(BCC_CID_DEV1, 3, &raw_an3_uv) == BCC_STATUS_SUCCESS) {
+    Serial.printf("  AN3 Raw: %.3f V  (%lu uV)\r\n", raw_an3_uv / 1000000.0f, raw_an3_uv);
+  }
+  
+  Serial.printf("  Thermistor 1 (AN2): %.1f °C\r\n", temperature_an2_c);
+  Serial.printf("  Thermistor 2 (AN3): %.1f °C\r\n", temperature_an3_c);
+  float avg_temp = (temperature_an2_c + temperature_an3_c) / 2.0f;
+  float max_temp = (temperature_an2_c > temperature_an3_c) ? temperature_an2_c : temperature_an3_c;
+  Serial.printf("  Average: %.1f °C  |  Max: %.1f °C\r\n", avg_temp, max_temp);
+}
+
+void print_json_status() {
+  // Output JSON for web app consumption
+  Serial.print("{");
+  
+  // Charging state
+  Serial.print("\"charging_state\":\"");
+  switch (current_state) {
+    case STATE_IDLE: Serial.print("idle"); break;
+    case STATE_CHARGING: Serial.print("charging"); break;
+    case STATE_BALANCING: Serial.print("balancing"); break;
+    case STATE_COMPLETE: Serial.print("complete"); break;
+    case STATE_ERROR: Serial.print("error"); break;
+    case STATE_SLEEP: Serial.print("sleep"); break;
+    default: Serial.print("unknown"); break;
+  }
+  Serial.print("\",");
+  
+  // Target voltage
+  Serial.printf("\"target_voltage\":%.3f,", target_voltage_uv / 1000000.0f);
+  
+  // Cell voltages
+  Serial.print("\"cell_voltages\":[");
+  for (uint8_t i = 0; i < CELL_COUNT; i++) {
+    if (i > 0) Serial.print(",");
+    Serial.printf("%.4f", cell_voltages_uv[i] / 1000000.0f);
+  }
+  Serial.print("],");
+  
+  // Temperatures
+  float avg_temp = (temperature_an2_c + temperature_an3_c) / 2.0f;
+  float max_temp = (temperature_an2_c > temperature_an3_c) ? temperature_an2_c : temperature_an3_c;
+  Serial.print("\"temperatures\":{");
+  Serial.printf("\"thermistor1\":%.1f,", temperature_an2_c);
+  Serial.printf("\"thermistor2\":%.1f,", temperature_an3_c);
+  Serial.printf("\"average\":%.1f,", avg_temp);
+  Serial.printf("\"max\":%.1f", max_temp);
+  Serial.print("},");
+  
+  // IVT-S shunt data
+  Serial.print("\"ivt_shunt\":{");
+  if (ivt_shunt != nullptr && ivt_shunt->is_alive()) {
+    Serial.printf("\"online\":true,");
+    Serial.printf("\"current\":%.2f,", ivt_shunt->get_current());
+    Serial.printf("\"voltage\":%.2f,", ivt_shunt->get_voltage());
+    Serial.printf("\"power\":%.2f,", ivt_shunt->get_power());
+    Serial.printf("\"temperature\":%.1f,", ivt_shunt->get_temperature());
+    Serial.printf("\"amp_hours\":%.3f,", ivt_shunt->get_amp_hours());
+    Serial.printf("\"energy\":%.3f", ivt_shunt->get_kilowatt_hours());
+  } else {
+    Serial.print("\"online\":false,");
+    Serial.print("\"current\":0.0,");
+    Serial.print("\"voltage\":0.0,");
+    Serial.print("\"power\":0.0,");
+    Serial.print("\"temperature\":0.0,");
+    Serial.print("\"amp_hours\":0.0,");
+    Serial.print("\"energy\":0.0");
+  }
+  Serial.print("}");
+  
+  Serial.println("}");
 }
 
 uint32_t get_total_voltage() {
@@ -593,10 +807,10 @@ void update_charging_state() {
       Serial.println("\n=== State: CHARGING ===");
 
       // Check if we've reached target voltage
-      if (total_voltage >= TARGET_VOLTAGE_UV) {
+      if (total_voltage >= target_voltage_uv) {
         Serial.printf("Target voltage reached! (%.3f V >= %.3f V)\r\n",
                      total_voltage / 1000000.0f,
-                     TARGET_VOLTAGE_UV / 1000000.0f);
+                     target_voltage_uv / 1000000.0f);
 
         // Check if cells need balancing
         if (cell_delta > BALANCE_THRESHOLD_UV) {
@@ -614,7 +828,7 @@ void update_charging_state() {
       } else {
         Serial.printf("Charging... (%.3f V / %.3f V)\r\n",
                      total_voltage / 1000000.0f,
-                     TARGET_VOLTAGE_UV / 1000000.0f);
+                     target_voltage_uv / 1000000.0f);
       }
       break;
 
@@ -627,7 +841,7 @@ void update_charging_state() {
         stop_cell_balancing();
 
         // Check if we still need to charge
-        if (total_voltage < TARGET_VOLTAGE_UV) {
+        if (total_voltage < target_voltage_uv) {
           Serial.println("Resuming charging...");
           current_state = STATE_CHARGING;
           enable_contactor();
@@ -663,7 +877,7 @@ void update_charging_state() {
 }
 
 void setup() {
-  delay(5000);
+  // delay(5000);
 
   // Initialize Serial
   Serial.begin(115200);
@@ -675,22 +889,22 @@ void setup() {
   Serial.println("========================================\n");
 
   // Initialize contactor control pins
-  pinMode(CONTACTOR_2_PIN, OUTPUT);
-  pinMode(CONTACTOR_NSLEEP_PIN, OUTPUT);
-  pinMode(CONTACTOR_FAULT_PIN, INPUT);
+  pinMode(HV_CONTACTOR_2_PIN, OUTPUT);
+  pinMode(HV_CONTACTOR_NSLEEP_PIN, OUTPUT);
+  pinMode(HV_CONTACTOR_FAULT_PIN, INPUT);
 
   // Ensure contactors are off
-  digitalWrite(CONTACTOR_2_PIN, LOW);
-  digitalWrite(CONTACTOR_NSLEEP_PIN, LOW);
+  digitalWrite(HV_CONTACTOR_2_PIN, LOW);
+  digitalWrite(HV_CONTACTOR_NSLEEP_PIN, LOW);
 
   // Initialize PWM for contactor 1
-  PinName pinName = digitalPinToPinName(CONTACTOR_1_PIN);
+  PinName pinName = digitalPinToPinName(HV_CONTACTOR_1_PIN);
   TIM_TypeDef *Instance = (TIM_TypeDef *)pinmap_peripheral(pinName, PinMap_PWM);
 
   if (Instance != nullptr) {
     contactor_channel = STM_PIN_CHANNEL(pinmap_function(pinName, PinMap_PWM));
     contactor_timer = new HardwareTimer(Instance);
-    contactor_timer->setMode(contactor_channel, TIMER_OUTPUT_COMPARE_PWM1, CONTACTOR_1_PIN);
+    contactor_timer->setMode(contactor_channel, TIMER_OUTPUT_COMPARE_PWM1, HV_CONTACTOR_1_PIN);
     contactor_timer->setOverflow(CONTACTOR_PWM_FREQ, HERTZ_FORMAT);
     contactor_timer->setCaptureCompare(contactor_channel, 0, PERCENT_COMPARE_FORMAT);
     contactor_timer->pause(); // Start paused

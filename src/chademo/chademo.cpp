@@ -1,4 +1,5 @@
 #include "chademo.h"
+#include "debug_serial.h"
 
 CHAdeMOController::CHAdeMOController() {
   can_bus = nullptr;

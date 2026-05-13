@@ -17,9 +17,9 @@
 #include "BatteryCellController.h"
 #include "bcc/bcc_config.h"
 #include "hal/dma_config.h"
-#include "hal/hv-ecu-v0-pins.h"
+#include "hal/hv-ecu-v1-pins.h"
 
-#define Serial SerialUSB
+#include "debug_serial.h"
 
 // Configuration
 #define MAX_DEVICES 8

@@ -1,7 +1,6 @@
 #include "bms.h"
 #include "Arduino.h"
-
-#define Serial SerialUSB
+#include "debug_serial.h"
 
 BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *config0, BatteryCellControllerConfig *config1) {
   bcc0_config = config0;
@@ -44,12 +43,17 @@ BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *co
   hv_state_entry_time = 0;
   precharge_start_time = 0;
   contactor_fault = false;
+  hvil_open_count = 0;
   hardware_initialized = false;
   bcc0_initialized = false;
   bcc1_initialized = false;
   stack_voltage_uv = 0;
+  stack_voltage_bcc1_uv = 0;
+  cell_voltage_mutex = xSemaphoreCreateMutex();
   status_leds = nullptr;
   led_animation_step = 0;
+  led_display_mode = 0;
+  led_mode_switch_time = 0;
   last_successful_measurement = 0;
   communication_timeout_ms = Param::GetInt(Param::commTimeout);
   communication_lost = false;
@@ -311,6 +315,18 @@ void BatteryManagementSystem::master_task_loop() {
   Serial.println("BMS Master Task: Hardware initialized, starting state machine");
 
   while (true) {
+    // Snapshot shared voltage state at top of each iteration
+    uint32_t snap_voltages[BCC_MAX_CELLS];
+    uint32_t snap_stack_uv = 0, snap_stack_bcc1_uv = 0;
+    uint8_t snap_cell_count = bcc0_config->device_count * bcc0_config->cell_count
+                            + bcc1_config->device_count * bcc1_config->cell_count;
+    if (xSemaphoreTake(cell_voltage_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+      memcpy(snap_voltages, cell_voltages_uv, snap_cell_count * sizeof(uint32_t));
+      snap_stack_uv = stack_voltage_uv;
+      snap_stack_bcc1_uv = stack_voltage_bcc1_uv;
+      xSemaphoreGive(cell_voltage_mutex);
+    }
+
     // Update SOC using coulomb counting from IVT
     update_soc();
 
@@ -320,7 +336,7 @@ void BatteryManagementSystem::master_task_loop() {
 
       // Update CHAdeMO with current battery status
       uint8_t soc = get_soc();  // Get actual SOC from coulomb counting
-      uint16_t current_voltage = stack_voltage_uv / 1000000;  // Convert uV to V
+      uint16_t current_voltage = (snap_stack_uv + snap_stack_bcc1_uv) / 1000000;
       uint16_t requested_current = calculate_safe_charge_current();  // Calculate based on cell conditions
 
       chademo->update_battery_status(current_voltage, soc, requested_current);
@@ -329,7 +345,7 @@ void BatteryManagementSystem::master_task_loop() {
       if (chademo->is_charging() && current_state == BMS_Charging) {
         // Active charging - update current request dynamically
         uint16_t new_current = calculate_safe_charge_current();
-        if (new_current == 0 || has_reached_target_voltage(cell_voltages_uv, bcc0_config->cell_count)) {
+        if (new_current == 0 || has_reached_target_voltage(snap_voltages, snap_cell_count)) {
           // Stop charging if current reaches 0 or target voltage reached
           Serial.println("BMS: Charge complete or current limit reached");
           stop_chademo_charging();
@@ -357,22 +373,36 @@ void BatteryManagementSystem::master_task_loop() {
       continue;
     }
 
+    // HVIL interlock check — require 3 consecutive open reads (~300ms) before faulting
+    if (digitalRead(HVIL_DETECT_PIN) == LOW) {
+      hvil_open_count = 0;
+    } else {
+      hvil_open_count++;
+      if (hvil_open_count >= 3) {
+        hvil_open_count = 3;  // Saturate so it doesn't wrap
+        if (hv_state != HV_Fault && hv_state != HV_Disabled) {
+          Serial.println("BMS: HVIL interlock open — disconnecting HV!");
+          hv_disconnect();
+          hv_state = HV_Fault;
+          current_state = BMS_Error;
+        }
+      }
+    }
+
     switch (current_state) {
       case BMS_Idle:
         // Wait for user to start charging via console
         break;
 
       case BMS_Charging: {
-        // Use filtered voltages for decision making to avoid noise-induced state changes
-        if (has_reached_target_voltage(cell_voltages_uv, bcc0_config->cell_count)) {
+        if (has_reached_target_voltage(snap_voltages, snap_cell_count)) {
           Serial.println("BMS: Target voltage reached!");
           hv_disconnect();
           current_state = BMS_Idle;
           break;
         }
 
-        // Check cell voltage difference using filtered values
-        float max_diff_mv = get_max_cell_voltage_diff_mv(cell_voltages_uv, bcc0_config->cell_count);
+        float max_diff_mv = get_max_cell_voltage_diff_mv(snap_voltages, snap_cell_count);
 
         if (max_diff_mv > charging_config.balance_threshold_mv) {
           Serial.printf("BMS: Cell imbalance detected: %.2f mV (threshold: %.2f mV)\r\n",
@@ -380,21 +410,19 @@ void BatteryManagementSystem::master_task_loop() {
           hv_disconnect();
           current_state = BMS_CellBalancing;
 
-          // Calculate which cells need balancing using filtered voltages
-          calculate_cell_balance_requirements(cell_voltages_uv, bcc0_config->cell_count, cells_to_balance);
-          apply_cell_balancing(bcc0, cells_to_balance, bcc0_config->cell_count);
+          calculate_cell_balance_requirements(snap_voltages, snap_cell_count, cells_to_balance);
+          apply_cell_balancing(bcc0, cells_to_balance, snap_cell_count);
         }
         break;
       }
 
       case BMS_CellBalancing: {
-        // Check if cells are balanced enough to resume charging (using filtered values)
-        float max_diff_mv = get_max_cell_voltage_diff_mv(cell_voltages_uv, bcc0_config->cell_count);
+        float max_diff_mv = get_max_cell_voltage_diff_mv(snap_voltages, snap_cell_count);
 
         if (max_diff_mv <= charging_config.balance_target_mv) {
           Serial.printf("BMS: Cells balanced: %.2f mV (target: %.2f mV)\r\n",
                        max_diff_mv, charging_config.balance_target_mv);
-          stop_cell_balancing(bcc0, bcc0_config->cell_count);
+          stop_cell_balancing(bcc0, snap_cell_count);
           current_state = BMS_Charging;
           enable_contactors();
         } else {
@@ -411,6 +439,16 @@ void BatteryManagementSystem::master_task_loop() {
 
       default:
         break;
+    }
+
+    // IVT offline safety: if shunt goes silent while charging, stop immediately.
+    if (ivt_shunt && !ivt_shunt->is_alive()) {
+      if (hv_state == HV_Active || current_state == BMS_Charging) {
+        Serial.println("BMS: IVT shunt offline during operation — stopping charging!");
+        Param::SetInt(Param::safeChargeCurrent, 0);
+        stop_charging();
+        current_state = BMS_Error;
+      }
     }
 
     // Update LED status
@@ -448,10 +486,18 @@ void BatteryManagementSystem::bcc0_monitor_task_loop() {
 
   while (true) {
     if (hardware_initialized && current_state != BMS_Error) {
-      bool voltage_ok = measure_cell_voltages(bcc0, cell_voltages_uv);
-      bool stack_ok = measure_stack_voltage(bcc0, &stack_voltage_uv);
+      uint32_t tmp_voltages[BCC_MAX_CELLS];
+      uint32_t tmp_stack;
+      bool voltage_ok = measure_cell_voltages(bcc0, tmp_voltages);
+      bool stack_ok = measure_stack_voltage(bcc0, &tmp_stack);
 
       if (voltage_ok && stack_ok) {
+        if (xSemaphoreTake(cell_voltage_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+          memcpy(cell_voltages_uv, tmp_voltages,
+                 bcc0_config->device_count * bcc0_config->cell_count * sizeof(uint32_t));
+          stack_voltage_uv = tmp_stack;
+          xSemaphoreGive(cell_voltage_mutex);
+        }
         // Successful measurement - update timestamp and clear comm lost flag
         last_successful_measurement = millis();
         if (communication_lost) {
@@ -507,7 +553,7 @@ void BatteryManagementSystem::bcc1_monitor_task_loop() {
     }
   }
 
-  const uint8_t CELL_OFFSET = 6; // BCC1 cells stored at positions 6-11
+  const uint8_t CELL_OFFSET = bcc0_config->device_count * bcc0_config->cell_count;
 
   while (true) {
     if (bcc1_initialized && hardware_initialized && current_state != BMS_Error) {
@@ -518,12 +564,14 @@ void BatteryManagementSystem::bcc1_monitor_task_loop() {
       bool stack_ok = measure_stack_voltage(bcc1, &bcc1_stack_voltage);
 
       if (voltage_ok && stack_ok) {
-        // Store BCC1 cells at offset 6 in the main arrays
-        for (uint8_t i = 0; i < bcc1_config->cell_count; i++) {
-          cell_voltages_uv[CELL_OFFSET + i] = bcc1_cell_voltages[i];
+        if (xSemaphoreTake(cell_voltage_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+          uint8_t n = bcc1_config->device_count * bcc1_config->cell_count;
+          for (uint8_t i = 0; i < n; i++) {
+            cell_voltages_uv[CELL_OFFSET + i] = bcc1_cell_voltages[i];
+          }
+          stack_voltage_bcc1_uv = bcc1_stack_voltage;
+          xSemaphoreGive(cell_voltage_mutex);
         }
-
-        // Voltage filtering removed - using raw measurements directly
       }
     }
 
@@ -668,6 +716,11 @@ bool BatteryManagementSystem::has_reached_target_voltage(uint32_t *cell_voltages
 
 // HV Connection State Machine Implementation
 void BatteryManagementSystem::hv_connect(HV_Mode mode) {
+  if (hv_state == HV_Fault) {
+    Serial.println("BMS: Cannot connect HV - system in fault state (reset required)");
+    return;
+  }
+
   if (contactor_fault) {
     Serial.println("BMS: Cannot connect HV - contactor fault detected");
     hv_state = HV_Fault;
@@ -690,9 +743,8 @@ void BatteryManagementSystem::hv_connect(HV_Mode mode) {
 
   // Step 1: Close negative contactor (IN2/OUT2) - begins HV precharge
   Serial.println("BMS: Step 1 - Closing negative contactor (precharge begins)");
-  digitalWrite(contactor_enable_pin, HIGH);      // nSLEEP = HIGH (device awake)
-  digitalWrite(negative_contactor_pin, HIGH);    // IN2 = HIGH (OUT2 energizes negative contactor)
-  digitalWrite(positive_contactor_pin, LOW);     // IN1 = LOW (precharge active, positive contactor open)
+  digitalWrite(contactor_enable_pin, HIGH);  // nSLEEP = HIGH (device awake)
+  control_contactors(false, true);           // positive=open, negative=closed
 }
 
 void BatteryManagementSystem::hv_disconnect() {
@@ -701,8 +753,7 @@ void BatteryManagementSystem::hv_disconnect() {
   hv_state_entry_time = millis();
 
   // Open both contactors immediately
-  digitalWrite(positive_contactor_pin, LOW);   // IN1 = LOW (OUT1 disabled)
-  digitalWrite(negative_contactor_pin, LOW);   // IN2 = LOW (OUT2 disabled)
+  control_contactors(false, false);
 
   // Verify disconnection using IVT-S
   if (ivt_shunt != nullptr && ivt_shunt->is_alive()) {
@@ -753,6 +804,7 @@ void BatteryManagementSystem::update_hv_state() {
         Serial.println("BMS: Precharge timeout!");
         hv_disconnect();
         hv_state = HV_Fault;
+        current_state = BMS_Error;
         break;
       }
 
@@ -763,8 +815,7 @@ void BatteryManagementSystem::update_hv_state() {
         if (voltage_ready) {
           Serial.println("BMS: Precharge complete (voltage matched)");
           Serial.println("BMS: Step 3 - Closing positive contactor");
-          // Step 3: Close positive contactor (IN1/OUT1)
-          digitalWrite(positive_contactor_pin, HIGH);  // IN1 = HIGH (OUT1 energizes positive contactor)
+          control_contactors(true, true);  // Close both: positive now joins negative
 
           // Step 4: Precharge disabled by external circuit when positive contactor closes
           Serial.println("BMS: HV system active");
@@ -906,6 +957,11 @@ void BatteryManagementSystem::start_charging() {
     return;
   }
 
+  if (hv_state == HV_Fault) {
+    Serial.println("BMS: Cannot start charging - HV in fault state (reset required)");
+    return;
+  }
+
   if (current_state == BMS_Idle) {
     Serial.println("BMS: Starting charging cycle");
 
@@ -942,7 +998,9 @@ void BatteryManagementSystem::stop_charging() {
   // Stop HV system
   hv_disconnect();
 
-  stop_cell_balancing(bcc0, bcc0_config->cell_count);
+  uint8_t n_cells = bcc0_config->device_count * bcc0_config->cell_count
+                  + bcc1_config->device_count * bcc1_config->cell_count;
+  stop_cell_balancing(bcc0, n_cells);
   current_state = BMS_Idle;
 }
 
@@ -960,19 +1018,23 @@ void BatteryManagementSystem::force_balance_cells() {
 
   Serial.println("BMS: User requested cell balancing");
   disable_contactors();
-  calculate_cell_balance_requirements(cell_voltages_uv, bcc0_config->cell_count, cells_to_balance);
-  apply_cell_balancing(bcc0, cells_to_balance, bcc0_config->cell_count);
+  uint8_t n_cells = bcc0_config->device_count * bcc0_config->cell_count
+                  + bcc1_config->device_count * bcc1_config->cell_count;
+  calculate_cell_balance_requirements(cell_voltages_uv, n_cells, cells_to_balance);
+  apply_cell_balancing(bcc0, cells_to_balance, n_cells);
   current_state = BMS_CellBalancing;
 }
 
 void BatteryManagementSystem::get_cell_voltages(uint32_t *voltages, uint8_t *count) {
-  uint8_t total_cells = bcc0_config->cell_count + bcc1_config->cell_count;
+  uint8_t total_cells = bcc0_config->device_count * bcc0_config->cell_count
+                      + bcc1_config->device_count * bcc1_config->cell_count;
   *count = total_cells;
   memcpy(voltages, cell_voltages_uv, total_cells * sizeof(uint32_t));
 }
 
 void BatteryManagementSystem::get_cell_voltages_filtered(uint32_t *voltages, uint8_t *count) {
-  uint8_t total_cells = bcc0_config->cell_count + bcc1_config->cell_count;
+  uint8_t total_cells = bcc0_config->device_count * bcc0_config->cell_count
+                      + bcc1_config->device_count * bcc1_config->cell_count;
   *count = total_cells;
   memcpy(voltages, cell_voltages_uv, total_cells * sizeof(uint32_t));
 }
@@ -1337,6 +1399,9 @@ void BatteryManagementSystem::print_fault_status() {
 }
 
 BMS_State BatteryManagementSystem::enable_sleep_mode() {
+  // Open contactors before powering down BCC — callers may not do this themselves.
+  hv_disconnect();
+
   auto result = this->bcc0->enter_low_power_mode() == BCC_STATUS_SUCCESS;
   if (result)
     current_state = BMS_Sleep;
@@ -1357,8 +1422,8 @@ void BatteryManagementSystem::set_led_color(uint8_t led, uint32_t color) {
 
 void BatteryManagementSystem::set_state_leds(uint32_t color) {
   if (!status_leds) return;
-  // LEDs 0-1 for BMS state indication (LED 2 is now dedicated to HV state)
-  for (uint8_t i = 0; i < 2; i++) {
+  // Paint all LEDs with the state color (state mode owns the whole strip).
+  for (uint8_t i = 0; i < status_leds->numPixels(); i++) {
     status_leds->setPixelColor(i, color);
   }
 }
@@ -1367,43 +1432,73 @@ void BatteryManagementSystem::update_hv_led() {
   if (!status_leds) return;
   uint8_t brightness;
 
-  // LED 2: HV system state
+  // In state mode the HV LED is the last pixel on the strip (most visible
+  // "summary" LED next to the SOC bar when it's shown).
+  uint8_t hv_idx = status_leds->numPixels() - 1;
+
   switch (hv_state) {
     case HV_Disabled:
-      // Off - HV system disabled
-      set_led_color(2, color_rgb(0, 0, 0));
+      set_led_color(hv_idx, color_rgb(0, 0, 0));
       break;
 
     case HV_Precharge:
-      // Yellow pulsing - precharging
       led_animation_step = (led_animation_step + 1) % 100;
       brightness = (led_animation_step < 50) ? (led_animation_step * 5) : ((100 - led_animation_step) * 5);
-      set_led_color(2, color_rgb(brightness, brightness, 0));  // Yellow pulse
+      set_led_color(hv_idx, color_rgb(brightness, brightness, 0));  // Yellow pulse
       break;
 
     case HV_Active:
-      // Solid green - HV active and stable
-      set_led_color(2, color_rgb(0, 255, 0));
+      set_led_color(hv_idx, color_rgb(0, 255, 0));
       break;
 
     case HV_Fault:
-      // Flashing red - HV fault
       led_animation_step = (led_animation_step + 1) % 60;
       if (led_animation_step < 30) {
-        set_led_color(2, color_rgb(255, 0, 0));  // Bright red
+        set_led_color(hv_idx, color_rgb(255, 0, 0));
       } else {
-        set_led_color(2, color_rgb(0, 0, 0));    // Off
+        set_led_color(hv_idx, color_rgb(0, 0, 0));
       }
       break;
 
     case HV_Shutdown:
-      // Orange - shutting down
-      set_led_color(2, color_rgb(255, 128, 0));
+      set_led_color(hv_idx, color_rgb(255, 128, 0));
       break;
 
     default:
-      set_led_color(2, color_rgb(0, 0, 0));
+      set_led_color(hv_idx, color_rgb(0, 0, 0));
       break;
+  }
+}
+
+// SOC bar across all 10 LEDs. Each LED = 10% SOC. Color shifts with SOC.
+void BatteryManagementSystem::led_pattern_soc() {
+  if (!status_leds) return;
+  uint8_t soc = get_soc();
+  uint8_t count = status_leds->numPixels();
+
+  uint32_t color;
+  if (soc < 20)      color = color_rgb(255, 0, 0);    // Red
+  else if (soc < 50) color = color_rgb(255, 128, 0);  // Orange
+  else if (soc < 80) color = color_rgb(255, 255, 0);  // Yellow
+  else               color = color_rgb(0, 255, 0);    // Green
+
+  // Each LED represents 100/count percent.
+  uint16_t per_led = 100 / count;  // 10 for 10 LEDs
+  uint8_t full = soc / per_led;
+  uint8_t remainder = soc % per_led;
+
+  for (uint8_t i = 0; i < count; i++) {
+    if (i < full) {
+      set_led_color(i, color);
+    } else if (i == full && remainder > 0) {
+      uint8_t scale = (remainder * 255) / per_led;
+      uint8_t r = (((color >> 16) & 0xFF) * scale) / 255;
+      uint8_t g = (((color >> 8) & 0xFF) * scale) / 255;
+      uint8_t b = ((color & 0xFF) * scale) / 255;
+      set_led_color(i, color_rgb(r, g, b));
+    } else {
+      set_led_color(i, 0);
+    }
   }
 }
 
@@ -1416,14 +1511,16 @@ void BatteryManagementSystem::led_pattern_idle() {
 }
 
 void BatteryManagementSystem::led_pattern_charging() {
-  // Green wave/chase pattern showing charging progress on state LEDs (0-1)
-  led_animation_step = (led_animation_step + 1) % 2;
+  if (!status_leds) return;
+  // Green chase across all LEDs.
+  uint8_t count = status_leds->numPixels();
+  led_animation_step = (led_animation_step + 1) % count;
 
-  for (uint8_t i = 0; i < 2; i++) {
+  for (uint8_t i = 0; i < count; i++) {
     if (i == led_animation_step) {
-      set_led_color(i, color_rgb(0, 255, 0)); // Bright green
+      set_led_color(i, color_rgb(0, 255, 0)); // Bright green head
     } else {
-      set_led_color(i, color_rgb(0, 64, 0)); // Dim green
+      set_led_color(i, color_rgb(0, 64, 0));  // Dim green trail
     }
   }
 }
@@ -1453,10 +1550,23 @@ void BatteryManagementSystem::led_pattern_error() {
 void BatteryManagementSystem::update_status_leds() {
   if (!status_leds) return;
 
-  // Update BMS state LEDs (0-1)
+  // Toggle between state view and SOC view every 3 seconds, but only after
+  // the SOC has been initialized so we don't show a stale 0% bar.
+  const uint32_t LED_MODE_PERIOD_MS = 3000;
+  uint32_t now = millis();
+  if (soc_initialized && (now - led_mode_switch_time >= LED_MODE_PERIOD_MS)) {
+    led_display_mode ^= 1;
+    led_mode_switch_time = now;
+  }
+
+  if (soc_initialized && led_display_mode == 1) {
+    led_pattern_soc();
+    status_leds->show();
+    return;
+  }
+
   switch (current_state) {
     case BMS_Initialization:
-      // Purple - system initializing
       set_state_leds(color_rgb(128, 0, 128));
       break;
 
@@ -1464,14 +1574,16 @@ void BatteryManagementSystem::update_status_leds() {
       led_pattern_idle();
       break;
 
-    case BMS_Charging:
-      // Check if we're close to target using filtered voltages
-      if (has_reached_target_voltage(cell_voltages_uv, bcc0_config->cell_count)) {
+    case BMS_Charging: {
+      uint8_t n_cells = bcc0_config->device_count * bcc0_config->cell_count
+                      + bcc1_config->device_count * bcc1_config->cell_count;
+      if (has_reached_target_voltage(cell_voltages_uv, n_cells)) {
         led_pattern_complete();
       } else {
         led_pattern_charging();
       }
       break;
+    }
 
     case BMS_CellBalancing:
       led_pattern_balancing();
@@ -1482,7 +1594,6 @@ void BatteryManagementSystem::update_status_leds() {
       break;
 
     case BMS_Sleep:
-      // All state LEDs off
       set_state_leds(0);
       break;
 
@@ -1490,7 +1601,7 @@ void BatteryManagementSystem::update_status_leds() {
       break;
   }
 
-  // Update HV state LED (2)
+  // HV summary LED overrides the last pixel during state mode.
   update_hv_led();
 
   status_leds->show();
@@ -1504,14 +1615,15 @@ void BatteryManagementSystem::initialize_soc_from_voltage() {
   // For NMC/NCA chemistry: ~3.0V = 0%, ~3.7V = 50%, ~4.2V = 100%
   // Note: This is a simplified linear approximation. Real NMC discharge curves are non-linear.
 
-  uint8_t cell_count = bcc0_config->cell_count;
+  uint8_t cell_count = bcc0_config->device_count * bcc0_config->cell_count
+                     + bcc1_config->device_count * bcc1_config->cell_count;
   if (cell_count == 0) return;
 
   uint32_t total_voltage = 0;
   for (uint8_t i = 0; i < cell_count; i++) {
     total_voltage += cell_voltages_uv[i];
   }
-  float avg_cell_voltage = total_voltage / (float)cell_count / 1000000.0f;  // Convert to volts
+  float avg_cell_voltage = total_voltage / (float)cell_count / 1000000.0f;
 
   // NMC voltage mapping: cellVoltMin = 0% SOC, target voltage = 100% SOC
   float min_voltage = Param::GetFloat(Param::cellVoltMin) / 1000.0f;  // Convert mV to V
@@ -1593,17 +1705,18 @@ uint16_t BatteryManagementSystem::calculate_safe_charge_current() const {
 
   float max_current = charging_config.max_charge_current_a;
 
+  uint8_t cell_count = bcc0_config->device_count * bcc0_config->cell_count
+                     + bcc1_config->device_count * bcc1_config->cell_count;
+
   // Factor 1: Cell voltage imbalance - reduce current if cells are imbalanced
-  float max_diff_mv = get_max_cell_voltage_diff_mv(cell_voltages_uv, bcc0_config->cell_count);
+  float max_diff_mv = get_max_cell_voltage_diff_mv(cell_voltages_uv, cell_count);
   if (max_diff_mv > charging_config.balance_threshold_mv) {
-    // Reduce current proportionally to imbalance
     float reduction_factor = 1.0f - (max_diff_mv - charging_config.balance_threshold_mv) / 100.0f;
-    if (reduction_factor < 0.3f) reduction_factor = 0.3f;  // Minimum 30% current
+    if (reduction_factor < 0.3f) reduction_factor = 0.3f;
     max_current *= reduction_factor;
   }
 
   // Factor 2: Taper current as we approach target voltage
-  uint8_t cell_count = bcc0_config->cell_count;
   if (cell_count > 0) {
     uint32_t total_voltage = 0;
     for (uint8_t i = 0; i < cell_count; i++) {
@@ -1779,9 +1892,23 @@ void BatteryManagementSystem::hv_can_task_loop() {
 
 // Update libopeninv spot values (read-only parameters)
 void BatteryManagementSystem::update_spot_values() {
-  // Pack voltages (convert uV to V)
-  Param::SetFloat(Param::packVoltage, stack_voltage_uv / 1000000.0f);
-  Param::SetFloat(Param::packVoltFilt, stack_voltage_uv / 1000000.0f);
+  // Snapshot shared voltage state under mutex
+  uint32_t local_voltages[BCC_MAX_CELLS];
+  uint32_t local_stack_uv = 0, local_stack_bcc1_uv = 0;
+  uint8_t cell_count = bcc0_config->device_count * bcc0_config->cell_count
+                     + bcc1_config->device_count * bcc1_config->cell_count;
+
+  if (xSemaphoreTake(cell_voltage_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+    memcpy(local_voltages, cell_voltages_uv, cell_count * sizeof(uint32_t));
+    local_stack_uv = stack_voltage_uv;
+    local_stack_bcc1_uv = stack_voltage_bcc1_uv;
+    xSemaphoreGive(cell_voltage_mutex);
+  }
+
+  // Pack voltages (convert uV to V) — sum both BCC chains
+  float pack_voltage_v = (local_stack_uv + local_stack_bcc1_uv) / 1000000.0f;
+  Param::SetFloat(Param::packVoltage, pack_voltage_v);
+  Param::SetFloat(Param::packVoltFilt, pack_voltage_v);
 
   // Pack current from IVT shunt
   if (ivt_shunt && ivt_shunt->is_alive()) {
@@ -1799,18 +1926,13 @@ void BatteryManagementSystem::update_spot_values() {
   Param::SetInt(Param::hvState, (int)hv_state);
 
   // Cell voltage statistics
-  uint8_t cell_count = bcc0_config->cell_count + bcc1_config->cell_count;
   if (cell_count > 0) {
-    uint32_t min_cell_uv = cell_voltages_uv[0];
-    uint32_t max_cell_uv = cell_voltages_uv[0];
+    uint32_t min_cell_uv = local_voltages[0];
+    uint32_t max_cell_uv = local_voltages[0];
 
     for (uint8_t i = 1; i < cell_count; i++) {
-      if (cell_voltages_uv[i] < min_cell_uv) {
-        min_cell_uv = cell_voltages_uv[i];
-      }
-      if (cell_voltages_uv[i] > max_cell_uv) {
-        max_cell_uv = cell_voltages_uv[i];
-      }
+      if (local_voltages[i] < min_cell_uv) min_cell_uv = local_voltages[i];
+      if (local_voltages[i] > max_cell_uv) max_cell_uv = local_voltages[i];
     }
 
     // Convert uV to mV
