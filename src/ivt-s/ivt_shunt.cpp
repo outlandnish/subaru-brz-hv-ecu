@@ -33,11 +33,11 @@ void IVTShunt::begin(CANBus *can_bus) {
   can = can_bus;
 
   if (!can) {
-    Serial.println("IVT: ERROR - CAN bus pointer is null!");
+    debug_println("IVT: ERROR - CAN bus pointer is null!");
     return;
   }
 
-  Serial.println("IVT: Initialized");
+  debug_println("IVT: Initialized");
 
   // Initialize the shunt to current measurement mode
   // set_defaults();
@@ -219,19 +219,19 @@ void IVTShunt::handle_0x528_kwh(CAN_FRAME *frame) {
 }
 
 void IVTShunt::start() {
-  Serial.println("IVT: Sending START command");
+  debug_println("IVT: Sending START command");
   const uint8_t cmd[] = {0x34, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00};
   send_command(cmd);
 }
 
 void IVTShunt::stop() {
-  Serial.println("IVT: Sending STOP command");
+  debug_println("IVT: Sending STOP command");
   const uint8_t cmd[] = {0x34, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00};
   send_command(cmd);
 }
 
 void IVTShunt::restart() {
-  Serial.println("IVT: Sending RESTART command (resets Ah/kWh)");
+  debug_println("IVT: Sending RESTART command (resets Ah/kWh)");
   const uint8_t cmd[] = {0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
   send_command(cmd);
 
@@ -244,7 +244,7 @@ void IVTShunt::restart() {
 }
 
 void IVTShunt::set_defaults() {
-  Serial.println("IVT: Sending DEFAULT command");
+  debug_println("IVT: Sending DEFAULT command");
   const uint8_t cmd[] = {0x3D, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
   send_command(cmd);
 }
@@ -255,7 +255,7 @@ void IVTShunt::send_store() {
 }
 
 void IVTShunt::init_current_mode() {
-  Serial.println("IVT: Initializing current measurement mode");
+  debug_println("IVT: Initializing current measurement mode");
 
   stop();
   delay(500);
@@ -271,7 +271,7 @@ void IVTShunt::init_current_mode() {
   start();
   delay(500);
 
-  Serial.println("IVT: Initialization complete");
+  debug_println("IVT: Initialization complete");
 }
 
 void IVTShunt::send_command(const uint8_t data[8]) {
@@ -288,17 +288,17 @@ void IVTShunt::send_command(const uint8_t data[8]) {
   }
 
   // Debug: verify frame contents before sending
-  Serial.printf("IVT: Pre-send frame check - ID:0x%03X Len:%d RTR:%d Data: %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+  debug_printf("IVT: Pre-send frame check - ID:0x%03X Len:%d RTR:%d Data: %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
                 frame.id, frame.length, frame.rtr,
                 frame.data.uint8[0], frame.data.uint8[1], frame.data.uint8[2], frame.data.uint8[3],
                 frame.data.uint8[4], frame.data.uint8[5], frame.data.uint8[6], frame.data.uint8[7]);
 
   if (!can->sendFrame(frame)) {
-    Serial.println("IVT: ERROR - Failed to send command");
+    debug_println("IVT: ERROR - Failed to send command");
   }
 
   if (debug_enabled) {
-    Serial.printf("IVT: TX 0x%03X [%d] %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+    debug_printf("IVT: TX 0x%03X [%d] %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
                   frame.id, frame.length,
                   frame.data.uint8[0], frame.data.uint8[1], frame.data.uint8[2], frame.data.uint8[3],
                   frame.data.uint8[4], frame.data.uint8[5], frame.data.uint8[6], frame.data.uint8[7]);
@@ -306,38 +306,38 @@ void IVTShunt::send_command(const uint8_t data[8]) {
 }
 
 void IVTShunt::print_frame(CAN_FRAME *frame) {
-  Serial.printf("IVT: RX 0x%03X [%d] %02X %02X %02X %02X %02X %02X %02X %02X | ",
+  debug_printf("IVT: RX 0x%03X [%d] %02X %02X %02X %02X %02X %02X %02X %02X | ",
                 frame->id, frame->length,
                 frame->data.uint8[0], frame->data.uint8[1], frame->data.uint8[2], frame->data.uint8[3],
                 frame->data.uint8[4], frame->data.uint8[5], frame->data.uint8[6], frame->data.uint8[7]);
 
   switch (frame->id) {
     case 0x521:
-      Serial.printf("Current: %.2f A\r\n", current_amps);
+      debug_printf("Current: %.2f A\r\n", current_amps);
       break;
     case 0x522:
-      Serial.printf("Voltage: %.2f V\r\n", voltage);
+      debug_printf("Voltage: %.2f V\r\n", voltage);
       break;
     case 0x523:
-      Serial.printf("Voltage2: %.2f V\r\n", voltage2);
+      debug_printf("Voltage2: %.2f V\r\n", voltage2);
       break;
     case 0x524:
-      Serial.printf("Voltage3: %.2f V\r\n", voltage3);
+      debug_printf("Voltage3: %.2f V\r\n", voltage3);
       break;
     case 0x525:
-      Serial.printf("Temperature: %.1f C\r\n", temperature_c);
+      debug_printf("Temperature: %.1f C\r\n", temperature_c);
       break;
     case 0x526:
-      Serial.printf("Power: %.2f kW\r\n", power_kw);
+      debug_printf("Power: %.2f kW\r\n", power_kw);
       break;
     case 0x527:
-      Serial.printf("Amp-Hours: %.3f Ah\r\n", amp_hours);
+      debug_printf("Amp-Hours: %.3f Ah\r\n", amp_hours);
       break;
     case 0x528:
-      Serial.printf("Energy: %.3f kWh\r\n", kwh);
+      debug_printf("Energy: %.3f kWh\r\n", kwh);
       break;
     default:
-      Serial.println();
+      debug_println();
       break;
   }
 }
@@ -363,7 +363,7 @@ void IVTShunt::parse_error_status(uint8_t status_byte) {
     if (counter != expected_counter) {
       counter_error = true;
       if (debug_enabled) {
-        Serial.printf("IVT: WARNING - Counter jump detected (expected %d, got %d)\r\n",
+        debug_printf("IVT: WARNING - Counter jump detected (expected %d, got %d)\r\n",
                       expected_counter, counter);
       }
     } else {
@@ -384,16 +384,16 @@ void IVTShunt::parse_error_status(uint8_t status_byte) {
   // Log critical errors
   if (debug_enabled) {
     if (system_error) {
-      Serial.println("IVT: ERROR - System error! Sensor functionality not ensured!");
+      debug_println("IVT: ERROR - System error! Sensor functionality not ensured!");
     }
     if (any_measurement_error) {
-      Serial.println("IVT: ERROR - Measurement error detected!");
+      debug_println("IVT: ERROR - Measurement error detected!");
     }
     if (precision_error) {
-      Serial.println("IVT: WARNING - Precision error or out of range!");
+      debug_println("IVT: WARNING - Precision error or out of range!");
     }
     if (overcurrent_flag) {
-      Serial.println("IVT: WARNING - Overcurrent condition!");
+      debug_println("IVT: WARNING - Overcurrent condition!");
     }
   }
 }
@@ -401,7 +401,7 @@ void IVTShunt::parse_error_status(uint8_t status_byte) {
 bool IVTShunt::validate_muxid(uint8_t muxid, uint8_t expected, const char* msg_name) {
   if (muxid != expected) {
     if (debug_enabled) {
-      Serial.printf("IVT: ERROR - MuxID mismatch for %s (expected 0x%02X, got 0x%02X)\r\n",
+      debug_printf("IVT: ERROR - MuxID mismatch for %s (expected 0x%02X, got 0x%02X)\r\n",
                     msg_name, expected, muxid);
     }
     return false;

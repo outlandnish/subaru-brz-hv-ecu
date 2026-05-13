@@ -35,7 +35,7 @@ bool configureDMA_HV_ECU(SPIClass *spi_tx, SPIClass *spi_rx) {
   if (tx_peripheral == SPI5 || rx_peripheral == SPI5) hspi_spi5 = (tx_peripheral == SPI5) ? spi_tx->getHandle() : spi_rx->getHandle();
 
   // Configure TX DMA based on which SPI instance
-  Serial.printf("Configuring DMA for SPI TX (Instance: 0x%08X)\n", (uint32_t)tx_peripheral);
+  debug_printf("Configuring DMA for SPI TX (Instance: 0x%08X)\n", (uint32_t)tx_peripheral);
 
   DMA_HandleTypeDef *hdma_tx = nullptr;
 
@@ -96,7 +96,7 @@ bool configureDMA_HV_ECU(SPIClass *spi_tx, SPIClass *spi_rx) {
     HAL_NVIC_SetPriority(SPI5_IRQn, 5, 0);
     HAL_NVIC_EnableIRQ(SPI5_IRQn);
   } else {
-    Serial.printf("Unsupported TX SPI instance: 0x%08X\n", (uint32_t)tx_peripheral);
+    debug_printf("Unsupported TX SPI instance: 0x%08X\n", (uint32_t)tx_peripheral);
     return false;
   }
 
@@ -114,7 +114,7 @@ bool configureDMA_HV_ECU(SPIClass *spi_tx, SPIClass *spi_rx) {
   hdma_tx->Init.PeriphBurst = DMA_PBURST_SINGLE;
 
   if (HAL_DMA_Init(hdma_tx) != HAL_OK) {
-    Serial.println("Failed to initialize TX DMA");
+    debug_println("Failed to initialize TX DMA");
     return false;
   }
 
@@ -122,7 +122,7 @@ bool configureDMA_HV_ECU(SPIClass *spi_tx, SPIClass *spi_rx) {
   SET_BIT(spi_tx->getHandle()->Instance->CR2, SPI_CR2_TXDMAEN);
 
   // Configure RX DMA based on which SPI instance
-  Serial.printf("Configuring DMA for SPI RX (Instance: 0x%08X)\n", (uint32_t)rx_peripheral);
+  debug_printf("Configuring DMA for SPI RX (Instance: 0x%08X)\n", (uint32_t)rx_peripheral);
 
   DMA_HandleTypeDef *hdma_rx = nullptr;
 
@@ -182,7 +182,7 @@ bool configureDMA_HV_ECU(SPIClass *spi_tx, SPIClass *spi_rx) {
     HAL_NVIC_SetPriority(SPI5_IRQn, 5, 0);
     HAL_NVIC_EnableIRQ(SPI5_IRQn);
   } else {
-    Serial.printf("Unsupported RX SPI instance: 0x%08X\n", (uint32_t)rx_peripheral);
+    debug_printf("Unsupported RX SPI instance: 0x%08X\n", (uint32_t)rx_peripheral);
     return false;
   }
 
@@ -200,7 +200,7 @@ bool configureDMA_HV_ECU(SPIClass *spi_tx, SPIClass *spi_rx) {
   hdma_rx->Init.PeriphBurst = DMA_PBURST_SINGLE;
 
   if (HAL_DMA_Init(hdma_rx) != HAL_OK) {
-    Serial.println("Failed to initialize RX DMA");
+    debug_println("Failed to initialize RX DMA");
     return false;
   }
 
@@ -314,21 +314,21 @@ static void logDMAStatus(DMA_Stream_TypeDef *dma_stream, const char *label) {
 
   uint32_t flags = (*isr_reg >> isr_shift) & 0x3D;
 
-  Serial.printf("%s DMA: CR=0x%08lX, NDTR=%lu, Flags=0x%02lX ", label,
+  debug_printf("%s DMA: CR=0x%08lX, NDTR=%lu, Flags=0x%02lX ", label,
                 dma_stream->CR, dma_stream->NDTR, flags);
-  if (flags & 0x01) Serial.print("FEIF ");
-  if (flags & 0x04) Serial.print("DMEIF ");
-  if (flags & 0x08) Serial.print("TEIF ");
-  if (flags & 0x10) Serial.print("HTIF ");
-  if (flags & 0x20) Serial.print("TCIF ");
-  Serial.println();
+  if (flags & 0x01) DebugSerial.print("FEIF ");
+  if (flags & 0x04) DebugSerial.print("DMEIF ");
+  if (flags & 0x08) DebugSerial.print("TEIF ");
+  if (flags & 0x10) DebugSerial.print("HTIF ");
+  if (flags & 0x20) DebugSerial.print("TCIF ");
+  debug_println();
 }
 
 // HAL SPI callbacks for interrupt-driven transfers
 extern "C" {
   // Called when SPI TX transmission completes
   void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi) {
-    // Serial.println("TX Complete callback fired!");
+    // debug_println("TX Complete callback fired!");
     // if (hspi->hdmatx != nullptr) {
     //   logDMAStatus(hspi->hdmatx->Instance, "TX");
     // }
@@ -337,7 +337,7 @@ extern "C" {
 
   // Called when SPI RX reception completes
   void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi) {
-    // Serial.println("RX Complete callback fired!");
+    // debug_println("RX Complete callback fired!");
     // if (hspi->hdmarx != nullptr) {
     //   logDMAStatus(hspi->hdmarx->Instance, "RX");
     // }
@@ -346,25 +346,25 @@ extern "C" {
 
   // Called if there's an SPI error during interrupt-driven transfer
   void HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi) {
-    Serial.printf("SPI Error callback! ErrorCode: 0x%08lX ", hspi->ErrorCode);
-    if (hspi->ErrorCode & HAL_SPI_ERROR_OVR) Serial.print("OVR ");
-    if (hspi->ErrorCode & HAL_SPI_ERROR_MODF) Serial.print("MODF ");
-    if (hspi->ErrorCode & HAL_SPI_ERROR_CRC) Serial.print("CRC ");
-    if (hspi->ErrorCode & HAL_SPI_ERROR_FRE) Serial.print("FRE ");
-    if (hspi->ErrorCode & HAL_SPI_ERROR_DMA) Serial.print("DMA ");
-    Serial.printf("(TxXferCount: %d, RxXferCount: %d)\n", hspi->TxXferCount, hspi->RxXferCount);
+    debug_printf("SPI Error callback! ErrorCode: 0x%08lX ", hspi->ErrorCode);
+    if (hspi->ErrorCode & HAL_SPI_ERROR_OVR) DebugSerial.print("OVR ");
+    if (hspi->ErrorCode & HAL_SPI_ERROR_MODF) DebugSerial.print("MODF ");
+    if (hspi->ErrorCode & HAL_SPI_ERROR_CRC) DebugSerial.print("CRC ");
+    if (hspi->ErrorCode & HAL_SPI_ERROR_FRE) DebugSerial.print("FRE ");
+    if (hspi->ErrorCode & HAL_SPI_ERROR_DMA) DebugSerial.print("DMA ");
+    debug_printf("(TxXferCount: %d, RxXferCount: %d)\n", hspi->TxXferCount, hspi->RxXferCount);
 
     // Log SPI state and flags
-    Serial.printf("  SPI State: %d, SR: 0x%08lX, CR1: 0x%08lX, CR2: 0x%08lX\n",
+    debug_printf("  SPI State: %d, SR: 0x%08lX, CR1: 0x%08lX, CR2: 0x%08lX\n",
                   hspi->State, hspi->Instance->SR, hspi->Instance->CR1, hspi->Instance->CR2);
 
     // Log DMA state if available
     if (hspi->hdmarx != nullptr) {
-      Serial.printf("  RX DMA State: %d, NDTR: %lu\n",
+      debug_printf("  RX DMA State: %d, NDTR: %lu\n",
                     hspi->hdmarx->State, hspi->hdmarx->Instance->NDTR);
     }
     if (hspi->hdmatx != nullptr) {
-      Serial.printf("  TX DMA State: %d, NDTR: %lu\n",
+      debug_printf("  TX DMA State: %d, NDTR: %lu\n",
                     hspi->hdmatx->State, hspi->hdmatx->Instance->NDTR);
     }
 

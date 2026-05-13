@@ -34,9 +34,9 @@ bcc_device_t devices_0[MAX_DEVICES];
 bcc_device_t devices_1[MAX_DEVICES];
 
 void print_csv_header() {
-  Serial.println("\n=== Battery Characterization Data ===");
-  Serial.println("CSV Format: BCC,CID,Field,Address,Value,Description");
-  Serial.println("---");
+  debug_println("\n=== Battery Characterization Data ===");
+  debug_println("CSV Format: BCC,CID,Field,Address,Value,Description");
+  debug_println("---");
 }
 
 void dump_device_guid(uint8_t bcc_num, bcc_cid_t cid, BatteryCellController *bcc) {
@@ -44,13 +44,13 @@ void dump_device_guid(uint8_t bcc_num, bcc_cid_t cid, BatteryCellController *bcc
   bcc_status_t error = bcc->read_guid(cid, &guid);
 
   if (error == BCC_STATUS_SUCCESS) {
-    Serial.printf("%d,%d,GUID,N/A,0x%02X%04X%04X,Device GUID\r\n",
+    debug_printf("%d,%d,GUID,N/A,0x%02X%04X%04X,Device GUID\r\n",
                  bcc_num, cid,
                  (uint16_t)((guid >> 32) & 0x001FU),
                  (uint16_t)((guid >> 16) & 0xFFFFU),
                  (uint16_t)(guid & 0xFFFFU));
   } else {
-    Serial.printf("%d,%d,GUID,N/A,ERROR_%d,Failed to read GUID\r\n",
+    debug_printf("%d,%d,GUID,N/A,ERROR_%d,Failed to read GUID\r\n",
                  bcc_num, cid, error);
   }
 }
@@ -60,10 +60,10 @@ void dump_device_init_register(uint8_t bcc_num, bcc_cid_t cid, BatteryCellContro
   bcc_status_t error = bcc->read_register(cid, BCC_REG_INIT_ADDR, 1U, &regVal);
 
   if (error == BCC_STATUS_SUCCESS) {
-    Serial.printf("%d,%d,INIT,0x%04X,0x%04X,Initialization register\r\n",
+    debug_printf("%d,%d,INIT,0x%04X,0x%04X,Initialization register\r\n",
                  bcc_num, cid, BCC_REG_INIT_ADDR, regVal);
   } else {
-    Serial.printf("%d,%d,INIT,0x%04X,ERROR_%d,Failed to read\r\n",
+    debug_printf("%d,%d,INIT,0x%04X,ERROR_%d,Failed to read\r\n",
                  bcc_num, cid, BCC_REG_INIT_ADDR, error);
   }
 }
@@ -76,13 +76,13 @@ void dump_device_config_registers(uint8_t bcc_num, bcc_cid_t cid, BatteryCellCon
       bcc_status_t error = bcc->read_register(cid, BCC_REGISTERS_DATA_MC33771[i].address, 1U, &regVal);
 
       if (error == BCC_STATUS_SUCCESS) {
-        Serial.printf("%d,%d,%s,0x%04X,0x%04X,Configuration register\r\n",
+        debug_printf("%d,%d,%s,0x%04X,0x%04X,Configuration register\r\n",
                      bcc_num, cid,
                      BCC_REGISTERS_DATA_MC33771[i].name,
                      BCC_REGISTERS_DATA_MC33771[i].address,
                      regVal);
       } else {
-        Serial.printf("%d,%d,%s,0x%04X,ERROR_%d,Failed to read\r\n",
+        debug_printf("%d,%d,%s,0x%04X,ERROR_%d,Failed to read\r\n",
                      bcc_num, cid,
                      BCC_REGISTERS_DATA_MC33771[i].name,
                      BCC_REGISTERS_DATA_MC33771[i].address,
@@ -95,13 +95,13 @@ void dump_device_config_registers(uint8_t bcc_num, bcc_cid_t cid, BatteryCellCon
       bcc_status_t error = bcc->read_register(cid, BCC_REGISTERS_DATA_MC33772[i].address, 1U, &regVal);
 
       if (error == BCC_STATUS_SUCCESS) {
-        Serial.printf("%d,%d,%s,0x%04X,0x%04X,Configuration register\r\n",
+        debug_printf("%d,%d,%s,0x%04X,0x%04X,Configuration register\r\n",
                      bcc_num, cid,
                      BCC_REGISTERS_DATA_MC33772[i].name,
                      BCC_REGISTERS_DATA_MC33772[i].address,
                      regVal);
       } else {
-        Serial.printf("%d,%d,%s,0x%04X,ERROR_%d,Failed to read\r\n",
+        debug_printf("%d,%d,%s,0x%04X,ERROR_%d,Failed to read\r\n",
                      bcc_num, cid,
                      BCC_REGISTERS_DATA_MC33772[i].name,
                      BCC_REGISTERS_DATA_MC33772[i].address,
@@ -121,10 +121,10 @@ void dump_device_fuse_mirror(uint8_t bcc_num, bcc_cid_t cid, BatteryCellControll
     bcc_status_t error = bcc->read_fuse_mirror(cid, addr, &fuseVal);
 
     if (error == BCC_STATUS_SUCCESS) {
-      Serial.printf("%d,%d,FUSE_%02X,0x%02X,0x%04X,Fuse mirror data\r\n",
+      debug_printf("%d,%d,FUSE_%02X,0x%02X,0x%04X,Fuse mirror data\r\n",
                    bcc_num, cid, addr, addr, fuseVal);
     } else {
-      Serial.printf("%d,%d,FUSE_%02X,0x%02X,ERROR_%d,Failed to read\r\n",
+      debug_printf("%d,%d,FUSE_%02X,0x%02X,ERROR_%d,Failed to read\r\n",
                    bcc_num, cid, addr, addr, error);
     }
     delay(1); // Small delay between reads
@@ -132,7 +132,7 @@ void dump_device_fuse_mirror(uint8_t bcc_num, bcc_cid_t cid, BatteryCellControll
 }
 
 void characterize_device(uint8_t bcc_num, bcc_cid_t cid, BatteryCellController *bcc, bcc_device_t device_type) {
-  Serial.printf("\n# Characterizing BCC%d Device %d (MC3377%s)\r\n",
+  debug_printf("\n# Characterizing BCC%d Device %d (MC3377%s)\r\n",
                bcc_num, cid,
                (device_type == BCC_DEVICE_MC33771) ? "1" : "2");
 
@@ -150,7 +150,7 @@ void characterize_device(uint8_t bcc_num, bcc_cid_t cid, BatteryCellController *
 }
 
 bool initialize_bcc0() {
-  Serial.println("\n=== Initializing BCC0 ===");
+  debug_println("\n=== Initializing BCC0 ===");
 
   // Setup device types (assuming MC33772C for 6-cell batteries)
   for (uint8_t i = 0; i < MAX_DEVICES; i++) {
@@ -172,16 +172,16 @@ bool initialize_bcc0() {
   bcc_status_t error = bcc0->begin(nullptr);
 
   if (error == BCC_STATUS_SUCCESS) {
-    Serial.println("BCC0: Initialization successful");
+    debug_println("BCC0: Initialization successful");
     return true;
   } else {
-    Serial.printf("BCC0: Initialization failed with error %d\r\n", error);
+    debug_printf("BCC0: Initialization failed with error %d\r\n", error);
     return false;
   }
 }
 
 bool initialize_bcc1() {
-  Serial.println("\n=== Initializing BCC1 ===");
+  debug_println("\n=== Initializing BCC1 ===");
 
   // Setup device types (assuming MC33772C for 6-cell batteries)
   for (uint8_t i = 0; i < MAX_DEVICES; i++) {
@@ -203,16 +203,16 @@ bool initialize_bcc1() {
   bcc_status_t error = bcc1->begin(nullptr);
 
   if (error == BCC_STATUS_SUCCESS) {
-    Serial.println("BCC1: Initialization successful");
+    debug_println("BCC1: Initialization successful");
     return true;
   } else {
-    Serial.printf("BCC1: Initialization failed with error %d\r\n", error);
+    debug_printf("BCC1: Initialization failed with error %d\r\n", error);
     return false;
   }
 }
 
 uint8_t detect_devices(BatteryCellController *bcc, uint8_t bcc_num) {
-  Serial.printf("\nDetecting devices on BCC%d...\r\n", bcc_num);
+  debug_printf("\nDetecting devices on BCC%d...\r\n", bcc_num);
   uint8_t count = 0;
 
   for (uint8_t i = 0; i < MAX_DEVICES; i++) {
@@ -221,19 +221,19 @@ uint8_t detect_devices(BatteryCellController *bcc, uint8_t bcc_num) {
     bcc_status_t error = bcc->read_guid(cid, &guid);
 
     if (error == BCC_STATUS_SUCCESS) {
-      Serial.printf("  Device found at CID %d (GUID: 0x%02X%04X%04X)\r\n",
+      debug_printf("  Device found at CID %d (GUID: 0x%02X%04X%04X)\r\n",
                    cid,
                    (uint16_t)((guid >> 32) & 0x001FU),
                    (uint16_t)((guid >> 16) & 0xFFFFU),
                    (uint16_t)(guid & 0xFFFFU));
       count++;
     } else {
-      Serial.printf("  No device at CID %d\r\n", cid);
+      debug_printf("  No device at CID %d\r\n", cid);
     }
     delay(10);
   }
 
-  Serial.printf("Total devices detected: %d\r\n", count);
+  debug_printf("Total devices detected: %d\r\n", count);
   return count;
 }
 
@@ -241,14 +241,14 @@ void setup() {
   delay(2000);
 
   // Initialize Serial
-  Serial.begin(115200);
-  Serial.println("\n\n========================================");
-  Serial.println("   Battery Characterization Tool");
-  Serial.println("========================================");
-  Serial.println("This tool reads GUID, registers, and fuse");
-  Serial.println("mirror data from up to 8 batteries per BCC");
-  Serial.println("chain and outputs to CSV format.");
-  Serial.println("========================================\n");
+  DebugSerial.begin(115200);
+  debug_println("\n\n========================================");
+  debug_println("   Battery Characterization Tool");
+  debug_println("========================================");
+  debug_println("This tool reads GUID, registers, and fuse");
+  debug_println("mirror data from up to 8 batteries per BCC");
+  debug_println("chain and outputs to CSV format.");
+  debug_println("========================================\n");
 
   delay(1000);
 
@@ -275,9 +275,9 @@ void setup() {
 
   // Characterize BCC0 devices
   if (bcc0_ok && bcc0_device_count > 0) {
-    Serial.println("\n========================================");
-    Serial.println("Characterizing BCC0 Devices");
-    Serial.println("========================================");
+    debug_println("\n========================================");
+    debug_println("Characterizing BCC0 Devices");
+    debug_println("========================================");
 
     for (uint8_t i = 0; i < bcc0_device_count; i++) {
       bcc_cid_t cid = static_cast<bcc_cid_t>(i + 1);
@@ -288,9 +288,9 @@ void setup() {
 
   // Characterize BCC1 devices
   if (bcc1_ok && bcc1_device_count > 0) {
-    Serial.println("\n========================================");
-    Serial.println("Characterizing BCC1 Devices");
-    Serial.println("========================================");
+    debug_println("\n========================================");
+    debug_println("Characterizing BCC1 Devices");
+    debug_println("========================================");
 
     for (uint8_t i = 0; i < bcc1_device_count; i++) {
       bcc_cid_t cid = static_cast<bcc_cid_t>(i + 1);
@@ -300,14 +300,14 @@ void setup() {
   }
 
   // Done
-  Serial.println("\n========================================");
-  Serial.println("Characterization Complete!");
-  Serial.println("========================================");
-  Serial.println("\nTo save this data:");
-  Serial.println("1. Copy the CSV data above");
-  Serial.println("2. Paste into a text file");
-  Serial.println("3. Save as .csv file");
-  Serial.println("\nPress reset button to run again.");
+  debug_println("\n========================================");
+  debug_println("Characterization Complete!");
+  debug_println("========================================");
+  debug_println("\nTo save this data:");
+  debug_println("1. Copy the CSV data above");
+  debug_println("2. Paste into a text file");
+  debug_println("3. Save as .csv file");
+  debug_println("\nPress reset button to run again.");
 }
 
 void loop() {
