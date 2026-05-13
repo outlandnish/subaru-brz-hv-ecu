@@ -122,6 +122,7 @@ void BMSCANBroadcaster::ecosystem_task_loop() {
     vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(500));
 
     send_0x356();
+    send_0x406();
     send_0x359();
 
     if (tick500 & 1) {
@@ -226,9 +227,9 @@ void BMSCANBroadcaster::send_0x355() {
 
 // 0x356 — Pack Summary (500 ms)
 void BMSCANBroadcaster::send_0x356() {
-  // Pack voltage: 100 mV/LSB, uint16 — from IVT V1 (pack side). Supports up to 6553.5 V.
+  // Pack voltage: 10 mV/LSB, int16 — ecosystem standard (SimpBMS/Victron/SMA/Fronius)
   float pack_v = ivt ? ivt->get_voltage() : 0.0f;
-  uint16_t pack_v_enc = (uint16_t)(pack_v * 10.0f);  // V → 100 mV/LSB
+  int16_t pack_v_enc = (int16_t)(pack_v * 100.0f);  // V → 10 mV/LSB
 
   // Pack current: 100 mA/LSB, int16 — positive = charging
   float pack_a = ivt ? ivt->get_current() : 0.0f;
@@ -239,13 +240,36 @@ void BMSCANBroadcaster::send_0x356() {
 
   uint8_t d[8] = {0};
   d[0] = (uint8_t)(pack_v_enc & 0xFF);
-  d[1] = (uint8_t)((pack_v_enc >> 8) & 0xFF);  // uint16 little-endian
+  d[1] = (uint8_t)((pack_v_enc >> 8) & 0xFF);
   d[2] = (uint8_t)(pack_a_enc & 0xFF);
   d[3] = (uint8_t)((pack_a_enc >> 8) & 0xFF);
   d[4] = (uint8_t)(temp_enc & 0xFF);
   d[5] = (uint8_t)((temp_enc >> 8) & 0xFF);
   // d[6-7] = 0
   can->sendMessage(0x356, d, 8);
+}
+
+// 0x406 — Extended Pack Summary (500 ms)
+// High-resolution pack data for non-ecosystem receivers. Not compatible with Victron/SMA/Fronius.
+// Bytes 0–3: PackVoltage  uint32, 1 mV/LSB,  little-endian. Range 0–4294967 V.
+// Bytes 4–7: PackCurrent  int32,  1 mA/LSB,  little-endian. Positive = charging.
+void BMSCANBroadcaster::send_0x406() {
+  float pack_v = ivt ? ivt->get_voltage() : 0.0f;
+  float pack_a = ivt ? ivt->get_current() : 0.0f;
+
+  uint32_t v_enc = (uint32_t)(pack_v * 1000.0f);   // V → 1 mV/LSB
+  int32_t  a_enc = (int32_t)(pack_a  * 1000.0f);   // A → 1 mA/LSB
+
+  uint8_t d[8];
+  d[0] = (uint8_t)(v_enc & 0xFF);
+  d[1] = (uint8_t)((v_enc >> 8)  & 0xFF);
+  d[2] = (uint8_t)((v_enc >> 16) & 0xFF);
+  d[3] = (uint8_t)((v_enc >> 24) & 0xFF);
+  d[4] = (uint8_t)(a_enc & 0xFF);
+  d[5] = (uint8_t)((a_enc >> 8)  & 0xFF);
+  d[6] = (uint8_t)((a_enc >> 16) & 0xFF);
+  d[7] = (uint8_t)((a_enc >> 24) & 0xFF);
+  can->sendMessage(0x406, d, 8);
 }
 
 // 0x359 — Fault Flags (500 ms)

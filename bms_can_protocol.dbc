@@ -1,0 +1,183 @@
+VERSION "BMS CAN Protocol v0.1"
+
+NS_ :
+
+BS_: 500000
+
+BU_: BMS CHARGER INVERTER MONITOR
+
+// ── Ecosystem Broadcast Frames (0x351–0x35C) ────────────────────────────────
+
+BO_ 849 ChargeVoltageLimit: 8 BMS
+ SG_ ChargeVoltage          :  0|16@1+ (0.01,0)   [0|655.35]  "V"   CHARGER,INVERTER,MONITOR
+ SG_ ChargeCurrentLimit     : 16|16@1+ (0.1,0)    [0|6553.5]  "A"   CHARGER,INVERTER,MONITOR
+ SG_ DischargeCurrentLimit  : 32|16@1+ (0.1,0)    [0|6553.5]  "A"   CHARGER,INVERTER,MONITOR
+ SG_ DischargeVoltage       : 48|16@1+ (0.01,0)   [0|655.35]  "V"   CHARGER,INVERTER,MONITOR
+
+BO_ 853 StateOfCharge: 8 BMS
+ SG_ SOC                    :  0|16@1+ (0.01,0)   [0|100]     "%"   CHARGER,INVERTER,MONITOR
+ SG_ SOH                    : 16|16@1+ (0.01,0)   [0|100]     "%"   CHARGER,INVERTER,MONITOR
+ SG_ SOC_High               : 32|16@1+ (0.01,0)   [0|100]     "%"   CHARGER,INVERTER,MONITOR
+
+BO_ 854 PackSummary: 8 BMS
+ SG_ PackVoltage            :  0|16@1- (0.01,0)   [-327.68|327.67] "V"   CHARGER,INVERTER,MONITOR
+ SG_ PackCurrent            : 16|16@1- (0.1,0)    [-3276.8|3276.7] "A"   CHARGER,INVERTER,MONITOR
+ SG_ PackTemp               : 32|16@1- (0.1,0)    [-3276.8|3276.7] "degC" CHARGER,INVERTER,MONITOR
+
+BO_ 857 FaultFlags: 8 BMS
+ SG_ OVP                    :  0|1@1+  (1,0)      [0|1]       ""    CHARGER,INVERTER,MONITOR
+ SG_ UVP                    :  1|1@1+  (1,0)      [0|1]       ""    CHARGER,INVERTER,MONITOR
+ SG_ OTP                    :  2|1@1+  (1,0)      [0|1]       ""    CHARGER,INVERTER,MONITOR
+ SG_ UTP                    :  3|1@1+  (1,0)      [0|1]       ""    CHARGER,INVERTER,MONITOR
+ SG_ OCP_Charge             :  8|1@1+  (1,0)      [0|1]       ""    CHARGER,INVERTER,MONITOR
+ SG_ OCP_Discharge          :  9|1@1+  (1,0)      [0|1]       ""    CHARGER,INVERTER,MONITOR
+ SG_ WarnHighV              : 16|1@1+  (1,0)      [0|1]       ""    CHARGER,INVERTER,MONITOR
+ SG_ WarnLowV               : 17|1@1+  (1,0)      [0|1]       ""    CHARGER,INVERTER,MONITOR
+ SG_ WarnHighT              : 18|1@1+  (1,0)      [0|1]       ""    CHARGER,INVERTER,MONITOR
+ SG_ WarnHighChgCurrent     : 24|1@1+  (1,0)      [0|1]       ""    CHARGER,INVERTER,MONITOR
+ SG_ WarnHighDisChgCurrent  : 25|1@1+  (1,0)      [0|1]       ""    CHARGER,INVERTER,MONITOR
+ SG_ ActiveModules          : 32|8@1+  (1,0)      [0|30]      ""    CHARGER,INVERTER,MONITOR
+ SG_ BalancingModules        : 40|8@1+  (1,0)      [0|30]      ""    CHARGER,INVERTER,MONITOR
+
+BO_ 860 ChargerControl: 8 BMS
+ SG_ ChargeEnable           :  0|1@1+  (1,0)      [0|1]       ""    CHARGER
+ SG_ ForceCharge            :  1|1@1+  (1,0)      [0|1]       ""    CHARGER
+ SG_ DischargeEnable        :  2|1@1+  (1,0)      [0|1]       ""    INVERTER
+
+BO_ 1030 ExtPackSummary: 8 BMS
+ SG_ PackVoltage            :  0|32@1+ (0.001,0)  [0|4294967.295] "V"   INVERTER,MONITOR
+ SG_ PackCurrent            : 32|32@1- (0.001,0)  [-2147483.648|2147483.647] "A" INVERTER,MONITOR
+
+// ── Cell Voltage Frames (0x400–0x401) ─────────────────────────────────────
+// MUX byte = global module index (0–29). Chain 0: 0–14, Chain 1: 15–29.
+
+BO_ 1024 CellVoltages_1_3: 8 BMS
+ SG_ ModuleIndex            M  :  0|8@1+  (1,0)      [0|29]      ""    MONITOR
+ SG_ Cell1_Voltage          m0 :  8|16@1+ (0.001,0)  [0|65.535]  "V"   MONITOR
+ SG_ Cell2_Voltage          m0 : 24|16@1+ (0.001,0)  [0|65.535]  "V"   MONITOR
+ SG_ Cell3_Voltage          m0 : 40|16@1+ (0.001,0)  [0|65.535]  "V"   MONITOR
+ SG_ CRC8                   m0 : 56|8@1+  (1,0)      [0|255]     ""    MONITOR
+
+BO_ 1025 CellVoltages_4_6: 8 BMS
+ SG_ ModuleIndex            M  :  0|8@1+  (1,0)      [0|29]      ""    MONITOR
+ SG_ Cell4_Voltage          m0 :  8|16@1+ (0.001,0)  [0|65.535]  "V"   MONITOR
+ SG_ Cell5_Voltage          m0 : 24|16@1+ (0.001,0)  [0|65.535]  "V"   MONITOR
+ SG_ Cell6_Voltage          m0 : 40|16@1+ (0.001,0)  [0|65.535]  "V"   MONITOR
+ SG_ CRC8                   m0 : 56|8@1+  (1,0)      [0|255]     ""    MONITOR
+
+// ── Balancing Status Frame (0x402) ─────────────────────────────────────────
+
+BO_ 1026 BalancingStatus: 8 BMS
+ SG_ ModuleIndex            M  :  0|8@1+  (1,0)      [0|29]      ""    MONITOR
+ SG_ Balance_Cell1          m0 :  8|1@1+  (1,0)      [0|1]       ""    MONITOR
+ SG_ Balance_Cell2          m0 :  9|1@1+  (1,0)      [0|1]       ""    MONITOR
+ SG_ Balance_Cell3          m0 : 10|1@1+  (1,0)      [0|1]       ""    MONITOR
+ SG_ Balance_Cell4          m0 : 11|1@1+  (1,0)      [0|1]       ""    MONITOR
+ SG_ Balance_Cell5          m0 : 12|1@1+  (1,0)      [0|1]       ""    MONITOR
+ SG_ Balance_Cell6          m0 : 13|1@1+  (1,0)      [0|1]       ""    MONITOR
+ SG_ Balance_Mode           m0 : 16|8@1+  (1,0)      [0|2]       ""    MONITOR
+ SG_ Balance_Param          m0 : 24|16@1+ (0.001,0)  [0|65.535]  "V"   MONITOR
+ SG_ CRC8                   m0 : 56|8@1+  (1,0)      [0|255]     ""    MONITOR
+
+// ── Temperature Frame (0x403) ──────────────────────────────────────────────
+
+BO_ 1027 Temperature: 8 BMS
+ SG_ ModuleIndex            M  :  0|8@1+  (1,0)      [0|29]      ""    MONITOR
+ SG_ Temp_A                 m0 :  8|16@1- (0.01,0)   [-327.68|327.67] "degC" MONITOR
+ SG_ Temp_B                 m0 : 24|16@1- (0.01,0)   [-327.68|327.67] "degC" MONITOR
+ SG_ Temp_Die               m0 : 40|16@1- (0.01,0)   [-327.68|327.67] "degC" MONITOR
+ SG_ CRC8                   m0 : 56|8@1+  (1,0)      [0|255]     ""    MONITOR
+
+// ── BMS Config Frame (0x404) ───────────────────────────────────────────────
+
+BO_ 1028 BMSConfig: 8 BMS
+ SG_ Chain0_Modules         :  0|8@1+  (1,0)      [0|15]      ""    CHARGER,INVERTER,MONITOR
+ SG_ Chain1_Modules         :  8|8@1+  (1,0)      [0|15]      ""    CHARGER,INVERTER,MONITOR
+ SG_ Total_Modules          : 16|8@1+  (1,0)      [0|30]      ""    CHARGER,INVERTER,MONITOR
+ SG_ Protocol_Version       : 24|8@1+  (1,0)      [0|255]     ""    CHARGER,INVERTER,MONITOR
+ SG_ BMS_State              : 32|8@1+  (1,0)      [0|6]       ""    CHARGER,INVERTER,MONITOR
+ SG_ CRC8                   : 56|8@1+  (1,0)      [0|255]     ""    CHARGER,INVERTER,MONITOR
+
+// ── Contactor Status Frame (0x405) ─────────────────────────────────────────
+
+BO_ 1029 ContactorStatus: 8 BMS
+ SG_ K1_Closed              :  0|1@1+  (1,0)      [0|1]       ""    CHARGER,INVERTER,MONITOR
+ SG_ K2_Closed              :  1|1@1+  (1,0)      [0|1]       ""    CHARGER,INVERTER,MONITOR
+ SG_ K3_Closed              :  2|1@1+  (1,0)      [0|1]       ""    CHARGER,INVERTER,MONITOR
+ SG_ K4_Closed              :  3|1@1+  (1,0)      [0|1]       ""    CHARGER,INVERTER,MONITOR
+ SG_ Precharge_State        :  8|8@1+  (1,0)      [0|4]       ""    CHARGER,INVERTER,MONITOR
+ SG_ Precharge_Voltage      : 16|16@1+ (0.1,0)    [0|6553.5]  "V"   CHARGER,INVERTER,MONITOR
+ SG_ Pack_Voltage           : 32|16@1+ (0.1,0)    [0|6553.5]  "V"   CHARGER,INVERTER,MONITOR
+ SG_ CRC8                   : 56|8@1+  (1,0)      [0|255]     ""    CHARGER,INVERTER,MONITOR
+
+// ── Value descriptions ──────────────────────────────────────────────────────
+
+VAL_ 1028 BMS_State
+ 0 "Init"
+ 1 "Ready"
+ 2 "Active"
+ 3 "Balancing"
+ 4 "Charging"
+ 5 "Fault"
+ 6 "Precharge" ;
+
+VAL_ 1029 Precharge_State
+ 0 "Idle"
+ 1 "InProgress"
+ 2 "Complete"
+ 3 "Timeout"
+ 4 "Fault" ;
+
+VAL_ 1026 Balance_Mode
+ 0 "Disabled"
+ 1 "DeltaV"
+ 2 "Absolute" ;
+
+// ── Message attributes ──────────────────────────────────────────────────────
+
+BA_DEF_ BO_ "GenMsgCycleTime" INT 0 100000;
+BA_DEF_ SG_ "SystemSignalLongSymbol" STRING;
+
+BA_ "GenMsgCycleTime" BO_ 849  1000;
+BA_ "GenMsgCycleTime" BO_ 853  1000;
+BA_ "GenMsgCycleTime" BO_ 854  500;
+BA_ "GenMsgCycleTime" BO_ 857  500;
+BA_ "GenMsgCycleTime" BO_ 860  1000;
+BA_ "GenMsgCycleTime" BO_ 1024 100;
+BA_ "GenMsgCycleTime" BO_ 1025 100;
+BA_ "GenMsgCycleTime" BO_ 1026 500;
+BA_ "GenMsgCycleTime" BO_ 1027 500;
+BA_ "GenMsgCycleTime" BO_ 1028 5000;
+BA_ "GenMsgCycleTime" BO_ 1029 100;
+BA_ "GenMsgCycleTime" BO_ 1030 500;
+
+// ── Signal comments ─────────────────────────────────────────────────────────
+
+CM_ SG_ 849 ChargeVoltage         "Max charge voltage. 10 mV/LSB. Ecosystem standard (Victron/SMA/Fronius). Max 655.35 V.";
+CM_ SG_ 849 ChargeCurrentLimit    "Max charge current. 100 mA/LSB.";
+CM_ SG_ 849 DischargeCurrentLimit "Max discharge current. 100 mA/LSB.";
+CM_ SG_ 849 DischargeVoltage      "Min discharge voltage. 10 mV/LSB. Max 655.35 V.";
+CM_ SG_ 853 SOC                   "State of charge. 0.01%/LSB. 10000 = 100.00%.";
+CM_ SG_ 853 SOH                   "State of health. 0.01%/LSB. User-configurable via UDS DID 0xD105.";
+CM_ SG_ 853 SOC_High              "High-precision SOC. Same scale and value as SOC.";
+CM_ SG_ 854 PackVoltage           "Total pack voltage. 10 mV/LSB. int16. Ecosystem standard. Overflows above 327 V — use 0x406 for high-voltage packs.";
+CM_ SG_ 1030 PackVoltage          "Total pack voltage. 1 mV/LSB. uint32 little-endian. Range 0–4294967 V. Use for packs above 327 V.";
+CM_ SG_ 1030 PackCurrent          "Pack current. 1 mA/LSB. int32 little-endian. Positive = charging.";
+CM_ SG_ 854 PackCurrent           "Pack current. 100 mA/LSB. Positive = charging.";
+CM_ SG_ 854 PackTemp              "Highest NTC temperature. 0.1 degC/LSB. 0x7FFF = invalid/not available.";
+CM_ SG_ 1024 ModuleIndex          "Global module index (0–29). Chain 0: 0–14, Chain 1: 15–29.";
+CM_ SG_ 1024 Cell1_Voltage        "Cell 1 voltage. 1 mV/LSB.";
+CM_ SG_ 1024 Cell2_Voltage        "Cell 2 voltage. 1 mV/LSB.";
+CM_ SG_ 1024 Cell3_Voltage        "Cell 3 voltage. 1 mV/LSB.";
+CM_ SG_ 1025 Cell4_Voltage        "Cell 4 voltage. 1 mV/LSB.";
+CM_ SG_ 1025 Cell5_Voltage        "Cell 5 voltage. 1 mV/LSB.";
+CM_ SG_ 1025 Cell6_Voltage        "Cell 6 voltage. 1 mV/LSB.";
+CM_ SG_ 1026 Balance_Param        "Delta-V threshold (mode 0x01) or absolute target (mode 0x02). 1 mV/LSB.";
+CM_ SG_ 1027 Temp_A               "NTC thermistor A. 0.01 degC/LSB. 0x7FFF = invalid/disconnected.";
+CM_ SG_ 1027 Temp_B               "NTC thermistor B. 0.01 degC/LSB. 0x7FFF = invalid/disconnected.";
+CM_ SG_ 1027 Temp_Die             "MC33772B internal die temperature. 0.01 degC/LSB. 0x7FFF = invalid.";
+CM_ SG_ 1028 BMS_State            "BMS operating state. See VAL_ for encoding.";
+CM_ SG_ 1029 Precharge_State      "Pre-charge sequence state. See VAL_ for encoding.";
+CM_ SG_ 1029 Precharge_Voltage    "IVT-S inverter-side voltage. 100 mV/LSB.";
+CM_ SG_ 1029 Pack_Voltage         "IVT-S pack-side voltage. 100 mV/LSB.";
+

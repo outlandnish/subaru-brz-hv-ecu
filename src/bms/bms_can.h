@@ -88,6 +88,7 @@ private:
   void send_0x356();
   void send_0x359();
   void send_0x35C();
+  void send_0x406();
   void send_0x400_0x401(uint8_t module_idx, const uint32_t *voltages, uint8_t count);
   void send_0x402(uint8_t module_idx, const uint32_t *voltages, uint8_t count);
   void send_0x403(uint8_t module_idx, const uint32_t *voltages, uint8_t count);

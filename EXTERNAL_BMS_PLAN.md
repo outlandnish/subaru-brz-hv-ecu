@@ -78,6 +78,7 @@ This document defines the CAN communication protocol for a dual-chain BMS suppor
 | 0x403 | Temperature | Broadcast (MUX) | 500 ms/module | Per-module Temp_A, Temp_B, Temp_Die. MUX = module index (0–29) |
 | 0x404 | BMSConfig | Broadcast | On change + 5 s | Chain topology, module counts, BMS state, protocol version |
 | 0x405 | ContactorStatus | Broadcast | 100 ms | State of K1–K4 and pre-charge status |
+| 0x406 | ExtPackSummary | Broadcast | 500 ms | High-resolution pack voltage (1 mV/LSB) and current (1 mA/LSB) for high-voltage packs |
 | 0x7E0 | UDS Request | Request/Response | On demand | ISO 14229 diagnostic requests from external tool |
 | 0x7E8 | UDS Response | Request/Response | On demand | ISO 14229 diagnostic responses from BMS |
 
@@ -123,7 +124,7 @@ Transmitted every 500 ms.
 
 | Byte | Signal | Bits | Encoding | Description |
 |---|---|---|---|---|
-| 0–1 | PackVoltage | 16 | **100 mV/LSB, uint16** | Total pack voltage. Range 0–6553.5 V (hw max ~756 V). Changed from int16/10 mV to avoid overflow above 327 V |
+| 0–1 | PackVoltage | 16 | 10 mV/LSB, int16 | Total pack voltage. Ecosystem standard. Overflows above 327 V — use 0x406 for high-voltage packs |
 | 2–3 | PackCurrent | 16 | 100 mA/LSB, int16 | Pack current. Positive = charging, negative = discharging |
 | 4–5 | PackTemp | 16 | 0.1°C/LSB, int16 | Highest temperature across all NTC sensors. 0x7FFF = invalid/not yet available |
 | 6–7 | reserved | 16 | — | Set to 0x0000 |
@@ -308,7 +309,24 @@ Broadcasts the state of all four contactors and the pre-charge sequence. Transmi
 
 ---
 
-## 10. UDS Diagnostic Interface
+## 10. Extended Pack Summary Frame (0x406)
+
+High-resolution pack voltage and current for receivers that need sub-100 mV precision or support packs above 327 V. Not part of the ecosystem broadcast format — not parsed by Victron/SMA/Fronius chargers. Transmitted at the same rate as 0x356.
+
+### Frame Layout
+
+Transmitted every 500 ms.
+
+| Byte | Signal | Bits | Encoding | Description |
+|---|---|---|---|---|
+| 0–3 | PackVoltage | 32 | 1 mV/LSB, uint32 | Total pack voltage, little-endian. Range 0–4294967 V |
+| 4–7 | PackCurrent | 32 | 1 mA/LSB, int32 | Pack current, little-endian. Positive = charging, negative = discharging |
+
+> **Note:** No CRC — frame is 8 bytes, all payload. Temperature is omitted until BCC NTC readback is wired in; use 0x403 for per-module temperatures in the meantime.
+
+---
+
+## 11. UDS Diagnostic Interface
 
 The UDS interface provides configuration, fault management, and firmware update over ISO 14229. Accessible with any UDS-capable tool (Vector CANalyzer, PEAK PCAN, python-udsoncan, etc.).
 
