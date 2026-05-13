@@ -820,6 +820,7 @@ void setup() {
 #ifdef DEBUG_WAIT_FOR_SERIAL
   delay(2000);
 #endif
+
   debug_println("=== BMS Charging System for Dual 6S2P Packs ===");
   debug_println();
 

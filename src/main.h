@@ -15,14 +15,8 @@
 #include "cansdo.h"
 #include "debug_serial.h"
 
-// Firmware version encoding: 0xMMmmppbb
-// MM = Major (0-255), mm = Minor (0-255), pp = Patch (0-255), bb = Build (0-255)
-// Example: Version 1.2.3 = 0x01020300, Version 1.12.5 = 0x010C0500
-#define FW_VERSION_MAJOR 0
-#define FW_VERSION_MINOR 5
-#define FW_VERSION_PATCH 0
-#define FW_VERSION_BUILD 0
-#define FIRMWARE_VERSION ((FW_VERSION_MAJOR << 24) | (FW_VERSION_MINOR << 16) | (FW_VERSION_PATCH << 8) | FW_VERSION_BUILD)
+#include "version_gen.h"
+#define FIRMWARE_VERSION ((FW_VERSION_MAJOR << 24) | (FW_VERSION_MINOR << 16) | (FW_VERSION_PATCH << 8) | 0)
 
 // STM32 Unique Device ID (128 bits at fixed address)
 #define STM32_UNIQUE_ID_BASE 0x1FFF7A10UL

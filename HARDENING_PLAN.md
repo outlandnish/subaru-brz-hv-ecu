@@ -170,67 +170,67 @@ done at any time.
 
 ### Items
 
-**I1. Bump `lib/bcc` submodule pointer**
+**I1. Bump `lib/bcc` submodule pointer** ✓
 - `lib/bcc` HEAD in parent is `4f05bff`; actual HEAD on the submodule remote is `8c432e5` ("added debug-serial").
 - Confirm `lib/bcc` remote has `8c432e5` pushed. Then: `git add lib/bcc && git commit -m "Bump lib/bcc to 8c432e5"`.
 
-**I2. Pin all `lib_deps` to exact versions**
+**I2. Pin all `lib_deps` to exact versions** ✓
 - File: `platformio.ini`
 - Change `@^x.y.z` → `@x.y.z` for every dependency. Audit each lib for any known-breaking changes at the exact version before pinning.
 - Deps to pin: `gustice/FreeRtosCppAPI`, `stm32duino/STM32duino FreeRTOS`, `khoih-prog/STM32_PWM`, `collin80/can_common`, Adafruit NeoPixel, ArduinoJson.
 
-**I3. Lift shared `lib_deps` to `[env]`**
+**I3. Lift shared `lib_deps` to `[env]`** ✓
 - File: `platformio.ini`
 - Currently `simple-charger` has its own `lib_deps` that shadow `[env]`'s (which is empty). Add a `lib_deps` block to `[env]` with the common set. Each environment extends via `${env.lib_deps}\n extra-dep@x.y.z`.
 
-**I4. Add build warning flags and map file output**
+**I4. Add build warning flags and map file output** ✓
 - File: `platformio.ini` `[env]` `build_flags`
 - Add: `-Wall -Wextra -Wno-unused-parameter -Werror=return-type -Werror=format -Wdouble-promotion -fstack-usage -Wl,-Map=${BUILD_DIR}/${PIOENV}.map`
 - Fix any new warnings that surface (expect a few from lib code — use `#pragma GCC diagnostic` suppressions scoped tightly).
 
-**I5. Add a GitHub Actions CI workflow**
+**I5. Add a GitHub Actions CI workflow** ✓
 - File: `.github/workflows/build.yml` (new)
 - Jobs: (a) `pio run -e hv-ecu`, (b) `pio run -e simple-charger`, (c) `pio run -e battery-char`, (d) `git submodule status | grep -q '^+'` fails if pointer drifts.
 - Trigger: push to `main`, any PR.
 
-**I6. Add at least two unity smoke tests**
+**I6. Add at least two unity smoke tests** ✓
 - File: `test/test_params/test_params.cpp` (new)
 - Test 1: `Param::LoadDefaults()` → key safety-critical params are within safe ranges (target cell voltage ≤ 4.2V, max charge current ≤ configured limit).
 - Test 2: CAN frame encode/decode round-trip for IVT 0x521 frame (muxid=0, status=0, value=1000 mA → `get_current() == 1.0f`).
 - Wire `[env:bms-test]` to actually build and run these.
 
-**I7. Commit `web/` into source control**
+**I7. Commit `web/` into source control** — deferred; web/ is simple-charger debug tooling, not firmware
 - Add `web/.gitignore` containing `node_modules/`.
 - `git add web/server.js web/package.json web/package-lock.json web/public/ web/README.md`.
 - Commit as `"Add web operator interface"`.
 - Add a brief section to top-level `README.md` explaining how to start it.
 
-**I8. Delete `hv-ecu-v0-pins.h`**
+**I8. Delete `hv-ecu-v0-pins.h`** ✓
 - File: `src/hal/hv-ecu-v0-pins.h`
 - Confirm zero references (`grep -r v0-pins src/`). Delete. If v0 boards must be supported in future, add a `HV_ECU_BOARD_REV` compile flag and select the correct header in a wrapper.
 
-**I9. Clean up `hv-ecu-v1-pins.h` — remove `DebugSerial` declaration**
+**I9. Clean up `hv-ecu-v1-pins.h` — remove `DebugSerial` declaration** ✓
 - File: `src/hal/hv-ecu-v1-pins.h:57–58`
 - Remove the `#include "HardwareSerial.h"` and `extern HardwareSerial DebugSerial;` lines. Pin headers are pure pin maps; the declaration belongs only in `debug_serial.h`.
 
-**I10. Fix `.gitignore` and untrack stray files**
+**I10. Fix `.gitignore` and untrack stray files** ✓
 - Add `node_modules/` to `.gitignore`.
 - Fix typo `lib/iso14429` → `lib/iso14229`.
 - Run `git rm --cached .DS_Store compile_commands.json` if they are tracked.
 - Add `*.map`, `*.su` (stack-usage files), `.cache/`.
 
-**I11. Inject firmware version from git at build time**
+**I11. Inject firmware version from git at build time** ✓
 - Add a PlatformIO `extra_scripts = pre:tools/gen_version.py` script that:
   - Runs `git describe --tags --long --dirty` to get version string + SHA + dirty flag.
   - Writes `src/version_gen.h` with `#define FW_GIT_SHA "..."`, `#define FW_GIT_DIRTY 0|1`, and optionally parses a semver tag to fill `FW_VERSION_MAJOR/MINOR/PATCH`.
   - Add `src/version_gen.h` to `.gitignore`.
 - Update `src/main.h` to include `version_gen.h` instead of hand-edited defines.
 
-**I12. Update README**
+**I12. Update README** ✓
 - Sections to add: hardware overview (link to `hardware/`), BCC submodule init instructions (`git submodule update --init --recursive`), build & flash commands per env, first-boot procedure, web UI instructions, SAFETY notice.
 - Fix the stray triple-backtick on line 9.
 
-**I13. Add a LICENSE file**
+**I13. Add a LICENSE file** ✓
 - The README has a placeholder `[Your License Here]`. Choose a license and commit a `LICENSE` file.
 
 ---

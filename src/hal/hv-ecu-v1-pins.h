@@ -53,6 +53,3 @@
 
 #define USART1_RX PB7
 #define USART1_TX PA15_ALT1
-
-#include "HardwareSerial.h"
-extern HardwareSerial DebugSerial;

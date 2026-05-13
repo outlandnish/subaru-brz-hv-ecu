@@ -1,0 +1,39 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  submodule-check:
+    name: Submodule pointer drift check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Fail if any submodule pointer is ahead of recorded commit
+        run: |
+          if git submodule status | grep -q '^+'; then
+            echo "Submodule pointer drift detected:"
+            git submodule status | grep '^+'
+            exit 1
+          fi
+
+  build-hv-ecu:
+    name: Build hv-ecu
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install platformio
+      - run: pio run -e hv-ecu
