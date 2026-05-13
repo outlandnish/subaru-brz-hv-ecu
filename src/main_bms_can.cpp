@@ -14,10 +14,14 @@
 
 #include "main.h"
 #include "bms/bms_can.h"
+#include "bms/bms_uds.h"
+#include "bms/bms_uds_tp.h"
 #include <STM32FreeRTOS.h>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdouble-promotion"
+
+extern "C" void *_sbrk(int);
 
 // ─── CAN buses ───────────────────────────────────────────────────────────────
 static CANBus *hv_can = nullptr;
@@ -26,9 +30,11 @@ static CANBus *hv_can = nullptr;
 static IVTShunt                    *ivt_shunt = nullptr;
 static BatteryManagementSystem     *bms       = nullptr;
 static BMSCANBroadcaster           *bms_can   = nullptr;
+static BMSUDSServer                *bms_uds   = nullptr;
 
 // ─── FreeRTOS queues ─────────────────────────────────────────────────────────
-static QueueHandle_t hv_can_queue = nullptr;
+static QueueHandle_t hv_can_queue  = nullptr;
+static QueueHandle_t uds_can_queue = nullptr;
 #define CAN_QUEUE_LENGTH 32
 
 // ─── BCC hardware config ──────────────────────────────────────────────────────
@@ -40,8 +46,13 @@ static void can_rx_task(void *) {
   CAN_FRAME frame;
   while (true) {
     if (hv_can && hv_can->available()) {
-      while (hv_can->read(frame))
-        xQueueSend(hv_can_queue, &frame, 0);
+      while (hv_can->read(frame)) {
+        if (frame.id == UDS_REQ_ID || frame.id == UDS_FUNC_ID) {
+          xQueueSend(uds_can_queue, &frame, 0);
+        } else {
+          xQueueSend(hv_can_queue, &frame, 0);
+        }
+      }
     }
     vTaskDelay(pdMS_TO_TICKS(1));
   }
@@ -63,11 +74,12 @@ static void ivt_process_task(void *) {
 void setup() {
   DebugSerial.begin(115200);
 #ifdef DEBUG_WAIT_FOR_SERIAL
-  while (!DebugSerial) {}
+  for (volatile uint32_t i = 0; i < 4000000U; i++);
 #endif
 
+  debug_serial_init();
   debug_println("\n=== BMS CAN Broadcaster ===");
-  debug_println("Protocol: BMS CAN v0.1 (EXTERNAL_PLAN.md)");
+  debug_println("Protocol: BMS CAN v0.1");
 
   Param::LoadDefaults();
 
@@ -75,7 +87,8 @@ void setup() {
   hv_can = new CANBus(HV_CAN_RX, HV_CAN_TX);
   hv_can->begin(500000);  // 500 kbps per protocol spec
 
-  hv_can_queue = xQueueCreate(CAN_QUEUE_LENGTH, sizeof(CAN_FRAME));
+  hv_can_queue  = xQueueCreate(CAN_QUEUE_LENGTH, sizeof(CAN_FRAME));
+  uds_can_queue = xQueueCreate(CAN_QUEUE_LENGTH, sizeof(CAN_FRAME));
 
   // ── IVT-S ────────────────────────────────────────────────────────────────
   ivt_shunt = new IVTShunt();
@@ -83,8 +96,8 @@ void setup() {
   ivt_shunt->start();
 
   // ── BCC hardware config — Taycan 6S2P, MC33772B always ───────────────────
-  const uint8_t chain0_count = (uint8_t)Param::GetInt(Param::bcc0DeviceCount);
-  const uint8_t chain1_count = (uint8_t)Param::GetInt(Param::bcc1DeviceCount);
+  const uint8_t chain0_count = 1;
+  const uint8_t chain1_count = 1;
 
   bcc0_config.device_count = chain0_count;
   bcc0_config.cell_count   = 6;
@@ -107,8 +120,6 @@ void setup() {
   bcc1_config.loopback   = false;
 
   // ── BMS ──────────────────────────────────────────────────────────────────
-  bms = new BatteryManagementSystem(&bcc0_config, &bcc1_config);
-
   BMSChargingConfig charging_cfg;
   charging_cfg.target_cell_voltage      = Param::GetFloat(Param::targetCellVolt) / 1000.0f;
   charging_cfg.balance_threshold_mv     = Param::GetFloat(Param::balanceThreshold);
@@ -119,8 +130,11 @@ void setup() {
   charging_cfg.max_charge_current_a     = Param::GetFloat(Param::maxChargeCurrent);
   charging_cfg.min_soc_percent          = Param::GetFloat(Param::minSocPercent);
   charging_cfg.max_soc_percent          = Param::GetFloat(Param::maxSocPercent);
-  bms->set_charging_config(charging_cfg);
 
+  // Construct BMS and initialize BCC hardware before any other setup disturbs SPI/DMA
+  bms = new BatteryManagementSystem(&bcc0_config, &bcc1_config);
+  bms->initialize(nullptr);  // BCC begin() immediately after construction, like simple_charger
+  bms->set_charging_config(charging_cfg);
   bms->set_contactor_pins(
     HV_CONTACTOR_1_PIN,
     HV_CONTACTOR_2_PIN,
@@ -129,7 +143,6 @@ void setup() {
   );
   bms->set_ivt_shunt(ivt_shunt);
   bms->set_can_buses(nullptr, hv_can);
-  bms->initialize(nullptr);
 
   // ── BMSCANBroadcaster ────────────────────────────────────────────────────
   bms_can = new BMSCANBroadcaster(bms, ivt_shunt, hv_can);
@@ -158,12 +171,25 @@ void setup() {
   debug_printf("BMS CAN: chain0=%d modules, chain1=%d modules, total cells=%d\r\n",
                chain0_count, chain1_count, total_cells);
 
+  // ── UDS server ───────────────────────────────────────────────────────────
+  bms_uds = new BMSUDSServer(bms, ivt_shunt, &bms_can->get_config_ref());
+  bms_uds_tp_init(hv_can, uds_can_queue);
+  bms_uds->init();
+
   // ── Start tasks ──────────────────────────────────────────────────────────
+  {
+    extern char _end, _estack;
+    char *heap_now = (char*)_sbrk(0);
+    debug_printf("Pre-task heap: used=%d free=%d\r\n",
+      (int)(heap_now - &_end),
+      (int)(&_estack - heap_now));
+  }
   bms->start_tasks();
   bms_can->start_tasks();
+  bms_uds->start_tasks();
 
-  xTaskCreate(can_rx_task,      "CAN_RX",      512, nullptr, 3, nullptr);
-  xTaskCreate(ivt_process_task, "IVT_Process", 512, nullptr, 2, nullptr);
+  xTaskCreate(can_rx_task,      "CAN_RX",      4096, nullptr, 3, nullptr);
+  xTaskCreate(ivt_process_task, "IVT_Process", 4096, nullptr, 2, nullptr);
 
   debug_println("BMS CAN: starting scheduler");
   vTaskStartScheduler();

@@ -45,9 +45,6 @@ BMSCANBroadcaster::BMSCANBroadcaster(BatteryManagementSystem *bms_, IVTShunt *iv
   config.soh_percent_x100 = 10000; // 100.00% default
   config.balance_mode = BALANCE_DISABLED;
   task_ecosystem_handle = nullptr;
-  task_cell_voltage_handle = nullptr;
-  task_balancing_temp_handle = nullptr;
-  task_config_contactor_handle = nullptr;
 }
 
 void BMSCANBroadcaster::set_config(const BMSCANConfig &cfg) {
@@ -55,36 +52,15 @@ void BMSCANBroadcaster::set_config(const BMSCANConfig &cfg) {
 }
 
 bool BMSCANBroadcaster::start_tasks() {
-  BaseType_t r;
-
-  r = xTaskCreate(ecosystem_task_wrapper, "BMS_CAN_Eco", 768, this, 1, &task_ecosystem_handle);
-  if (r != pdPASS) { debug_println("BMS_CAN: failed to create ecosystem task"); return false; }
-
-  r = xTaskCreate(cell_voltage_task_wrapper, "BMS_CAN_CV", 768, this, 1, &task_cell_voltage_handle);
-  if (r != pdPASS) { debug_println("BMS_CAN: failed to create cell voltage task"); return false; }
-
-  r = xTaskCreate(balancing_temp_task_wrapper, "BMS_CAN_BT", 768, this, 1, &task_balancing_temp_handle);
-  if (r != pdPASS) { debug_println("BMS_CAN: failed to create balancing/temp task"); return false; }
-
-  r = xTaskCreate(config_contactor_task_wrapper, "BMS_CAN_CC", 768, this, 1, &task_config_contactor_handle);
-  if (r != pdPASS) { debug_println("BMS_CAN: failed to create config/contactor task"); return false; }
-
-  debug_println("BMS_CAN: all tasks started");
+  BaseType_t r = xTaskCreate(broadcast_task_wrapper, "BMS_CAN", 512, this, 1, &task_ecosystem_handle);
+  if (r != pdPASS) { debug_println("BMS_CAN: failed to create broadcast task"); return false; }
+  debug_println("BMS_CAN: broadcast task started");
   return true;
 }
 
 // --- Static task wrappers ---
-void BMSCANBroadcaster::ecosystem_task_wrapper(void *pv) {
-  static_cast<BMSCANBroadcaster *>(pv)->ecosystem_task_loop();
-}
-void BMSCANBroadcaster::cell_voltage_task_wrapper(void *pv) {
-  static_cast<BMSCANBroadcaster *>(pv)->cell_voltage_task_loop();
-}
-void BMSCANBroadcaster::balancing_temp_task_wrapper(void *pv) {
-  static_cast<BMSCANBroadcaster *>(pv)->balancing_temp_task_loop();
-}
-void BMSCANBroadcaster::config_contactor_task_wrapper(void *pv) {
-  static_cast<BMSCANBroadcaster *>(pv)->config_contactor_task_loop();
+void BMSCANBroadcaster::broadcast_task_wrapper(void *pv) {
+  static_cast<BMSCANBroadcaster *>(pv)->broadcast_task_loop();
 }
 
 // --- CRC helper ---
@@ -114,81 +90,50 @@ ExtBMSState BMSCANBroadcaster::map_bms_state() const {
 // ===== Task loops =====
 
 // Ecosystem task: 0x351,0x355,0x35C @ 1000 ms; 0x356,0x359 @ 500 ms
-void BMSCANBroadcaster::ecosystem_task_loop() {
+// Single broadcast task — runs all periodic CAN frames on one 100 ms tick.
+void BMSCANBroadcaster::broadcast_task_loop() {
   TickType_t last_wake = xTaskGetTickCount();
-  uint32_t tick500 = 0;  // counts 500 ms intervals; send 1000 ms frames every 2nd
+  uint32_t tick = 0;
 
-  while (true) {
-    vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(500));
-
-    send_0x356();
-    send_0x406();
-    send_0x359();
-
-    if (tick500 & 1) {
-      send_0x351();
-      send_0x355();
-      send_0x35C();
-    }
-    tick500++;
-  }
-}
-
-// Cell voltage task: for each active module send 0x400 then 0x401, 100 ms between modules
-void BMSCANBroadcaster::cell_voltage_task_loop() {
-  TickType_t last_wake = xTaskGetTickCount();
-  while (true) {
-    uint8_t total = config.chain0_modules + config.chain1_modules;
-    if (total == 0) total = 1;
-
-    uint32_t voltages[BCC_MAX_CELLS];
-    uint8_t count = 0;
-    bms->get_cell_voltages(voltages, &count);
-
-    for (uint8_t m = 0; m < total; m++) {
-      send_0x400_0x401(m, voltages, count);
-      vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(100));
-    }
-  }
-}
-
-// Balancing + temperature task: for each active module send 0x402 then 0x403, 500 ms between modules
-void BMSCANBroadcaster::balancing_temp_task_loop() {
-  TickType_t last_wake = xTaskGetTickCount();
-  while (true) {
-    uint8_t total = config.chain0_modules + config.chain1_modules;
-    if (total == 0) total = 1;
-
-    uint32_t voltages[BCC_MAX_CELLS];
-    uint8_t count = 0;
-    bms->get_cell_voltages(voltages, &count);
-
-    for (uint8_t m = 0; m < total; m++) {
-      send_0x402(m, voltages, count);
-      send_0x403(m, voltages, count);
-      vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(500));
-    }
-  }
-}
-
-// Config + contactor task: 0x404 every 5000 ms (and on-change handled by periodic check),
-// 0x405 every 100 ms.
-void BMSCANBroadcaster::config_contactor_task_loop() {
-  TickType_t last_wake = xTaskGetTickCount();
-  uint32_t tick100 = 1;  // start at 1 so %50==0 fires after 5 s, not immediately at boot
-
-  // Send 0x404 immediately on start so receivers don't wait up to 5 s.
-  send_0x404();
+  send_0x404();  // Send config immediately so receivers don't wait 5 s
 
   while (true) {
     vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(100));
 
+    // 100 ms: 0x405 (contactor status), per-module 0x400/0x401/0x402/0x403
     send_0x405();
 
-    if (tick100 % 50 == 0) {
+    uint8_t total = config.chain0_modules + config.chain1_modules;
+    if (total == 0) total = 1;
+    uint32_t voltages[BCC_MAX_CELLS];
+    uint8_t count = 0;
+    bms->get_cell_voltages(voltages, &count);
+    for (uint8_t m = 0; m < total; m++) {
+      send_0x400_0x401(m, voltages, count);
+      send_0x402(m, voltages, count);
+      send_0x403(m, voltages, count);
+    }
+
+    // 500 ms: ecosystem frames 0x356, 0x406, 0x359
+    if (tick % 5 == 0) {
+      send_0x356();
+      send_0x406();
+      send_0x359();
+    }
+
+    // 1000 ms: 0x351, 0x355, 0x35C
+    if (tick % 10 == 0) {
+      send_0x351();
+      send_0x355();
+      send_0x35C();
+    }
+
+    // 5000 ms: 0x404 (config)
+    if (tick % 50 == 0) {
       send_0x404();
     }
-    tick100++;
+
+    tick++;
   }
 }
 

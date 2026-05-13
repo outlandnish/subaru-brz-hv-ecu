@@ -5,6 +5,9 @@
 
 BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *config0, BatteryCellControllerConfig *config1) {
   bcc0_config = config0;
+  bcc0_initialized = false;
+  bcc1_initialized = false;
+
   devices_0 = new bcc_device_t[config0->device_count];
   for (uint8_t i = 0; i < config0->device_count; i++) {
     devices_0[i] = config0->device_type;
@@ -15,6 +18,7 @@ BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *co
 
   tpl0 = new TPLSPI(bcc0_tx_spi, bcc0_rx_spi, config0->cs_pin, configureDMA_HV_ECU);
   bcc0 = new BatteryCellController(tpl0, devices_0, config0->device_count, config0->cell_count, config0->enable_pin, config0->intb_pin, config0->loopback);
+  // begin() deferred to bcc0_monitor_task_loop() — must run after scheduler starts so interrupts are live
 
   bcc1_config = config1;
 
@@ -30,12 +34,14 @@ BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *co
 
     tpl1 = new TPLSPI(bcc1_tx_spi, bcc1_rx_spi, config1->cs_pin, configureDMA_HV_ECU);
     bcc1 = new BatteryCellController(tpl1, devices_1, config1->device_count, config1->cell_count, config1->enable_pin, config1->intb_pin, config1->loopback);
+    // begin() deferred to bcc1_monitor_task_loop() — must run after scheduler starts so interrupts are live
   } else {
     devices_1 = nullptr;
     bcc1_tx_spi = nullptr;
     bcc1_rx_spi = nullptr;
     tpl1 = nullptr;
     bcc1 = nullptr;
+    bcc1_initialized = true;
   }
 
   current_state = BMS_Initialization;
@@ -46,8 +52,7 @@ BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *co
   contactor_fault = false;
   hvil_open_count = 0;
   hardware_initialized = false;
-  bcc0_initialized = false;
-  bcc1_initialized = false;
+  // bcc0_initialized and bcc1_initialized already set by begin() calls above
   stack_voltage_uv = 0;
   stack_voltage_bcc1_uv = 0;
   cell_voltage_mutex = xSemaphoreCreateMutex();
@@ -109,16 +114,14 @@ BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *co
   // Determine if BCC interfaces should be enabled based on device count
   bcc1_enabled = (config1->device_count > 0);
 
-  debug_printf("BMS: BCC0 enabled (%d devices), BCC1 %s (%d devices)\r\n",
-                config0->device_count,
-                bcc1_enabled ? "enabled" : "disabled",
-                config1->device_count);
+  debug_printf("BMS: BCC0 %d devices, BCC1 %d devices\r\n",
+                config0->device_count, config1->device_count);
 }
 
 bool BatteryManagementSystem::initialize(uint16_t device_configuration[][BCC_INIT_CONF_REG_CNT]) {
-  // Hardware initialization now happens in the monitor task after scheduler starts
-  // This function is kept for compatibility but doesn't do hardware init anymore
-  debug_println("BMS: Configuration accepted (hardware init will occur after scheduler starts)");
+  (void)device_configuration;
+  // BCC begin() runs in task context — nothing to do here pre-scheduler
+  debug_println("BMS: Initialized (BCC begin deferred to tasks)");
   return true;
 }
 
@@ -211,7 +214,7 @@ bool BatteryManagementSystem::start_tasks() {
   BaseType_t result = xTaskCreate(
     master_task_wrapper,
     "BMS_Master",
-    2048,
+    512,
     this,
     2,
     &master_task_handle
@@ -227,7 +230,7 @@ bool BatteryManagementSystem::start_tasks() {
     result = xTaskCreate(
       bcc0_monitor_task_wrapper,
       "BCC0_Monitor",
-      2048,
+      512,
       this,
       2,
       &bcc0_monitor_task_handle
@@ -248,7 +251,7 @@ bool BatteryManagementSystem::start_tasks() {
     result = xTaskCreate(
       bcc1_monitor_task_wrapper,
       "BCC1_Monitor",
-      2048,
+      512,
       this,
       2,
       &bcc1_monitor_task_handle
@@ -268,7 +271,7 @@ bool BatteryManagementSystem::start_tasks() {
   result = xTaskCreate(
     hv_can_task_wrapper,
     "HV_CAN",
-    2048,
+    512,
     this,
     1,  // Lower priority than monitor tasks
     &hv_can_task_handle
@@ -464,26 +467,22 @@ void BatteryManagementSystem::master_task_loop() {
 
 // BCC0 monitor task - reads cell voltages
 void BatteryManagementSystem::bcc0_monitor_task_loop() {
-  // Perform hardware initialization here (after scheduler starts)
-  if (!hardware_initialized) {
-    debug_println("BCC0: Initializing...");
+  debug_println("BCC0 Monitor Task: Started");
 
-    pinMode(bcc0_config->cs_pin, OUTPUT);
-    digitalWrite(bcc0_config->cs_pin, HIGH);
-
-    bcc_status_t error = bcc0->begin(nullptr);
-    if (error != BCC_STATUS_SUCCESS) {
-      debug_printf("BCC0: Init failed (error %d)\r\n", error);
-      current_state = BMS_Error;
-      hardware_initialized = false;
-      bcc0_initialized = false;
-    } else {
-      debug_println("BCC0: Ready");
-      hardware_initialized = true;
-      bcc0_initialized = true;
-      current_state = BMS_Idle;
-    }
+  debug_println("BCC0: Initializing...");
+  pinMode(bcc0_config->cs_pin, OUTPUT);
+  digitalWrite(bcc0_config->cs_pin, HIGH);
+  bcc_status_t err = bcc0->begin(nullptr);
+  if (err != BCC_STATUS_SUCCESS) {
+    debug_printf("BCC0: Init failed (%d)\r\n", err);
+    current_state = BMS_Error;
+    vTaskDelete(nullptr);
+    return;
   }
+  debug_println("BCC0: Ready");
+  bcc0_initialized = true;
+  hardware_initialized = true;
+  current_state = BMS_Idle;
 
   while (true) {
     if (hardware_initialized && current_state != BMS_Error) {
@@ -535,24 +534,23 @@ void BatteryManagementSystem::bcc0_monitor_task_loop() {
 
 // BCC1 monitor task
 void BatteryManagementSystem::bcc1_monitor_task_loop() {
-  // Perform hardware initialization here (after scheduler starts)
-  if (!bcc1_initialized) {
-    debug_println("BCC1: Waiting for BCC0...");
-    vTaskDelay(pdMS_TO_TICKS(3000)); // Wait for BCC0 to init first
-
-    debug_println("BCC1: Initializing...");
-    pinMode(bcc1_config->cs_pin, OUTPUT);
-    digitalWrite(bcc1_config->cs_pin, HIGH);
-
-    bcc_status_t error = bcc1->begin(nullptr);
-    if (error != BCC_STATUS_SUCCESS) {
-      debug_printf("BCC1: Init failed (error %d)\r\n", error);
-      bcc1_initialized = false;
-    } else {
-      debug_println("BCC1: Ready");
-      bcc1_initialized = true;
-    }
+  debug_println("BCC1 Monitor Task: Started");
+  // Wait for BCC0 to finish init before starting BCC1
+  while (!bcc0_initialized) {
+    vTaskDelay(pdMS_TO_TICKS(50));
   }
+
+  debug_println("BCC1: Initializing...");
+  pinMode(bcc1_config->cs_pin, OUTPUT);
+  digitalWrite(bcc1_config->cs_pin, HIGH);
+  bcc_status_t err = bcc1->begin(nullptr);
+  if (err != BCC_STATUS_SUCCESS) {
+    debug_printf("BCC1: Init failed (%d)\r\n", err);
+    vTaskDelete(nullptr);
+    return;
+  }
+  debug_println("BCC1: Ready");
+  bcc1_initialized = true;
 
   const uint8_t CELL_OFFSET = bcc0_config->device_count * bcc0_config->cell_count;
 

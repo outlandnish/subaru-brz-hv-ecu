@@ -63,6 +63,9 @@ public:
   // Live setters for fields that change at runtime
   void set_contactor_mask(uint8_t mask) { config.contactor_closed_mask = mask; }
 
+  // Expose mutable config reference so UDS can update live fields
+  BMSCANConfig &get_config_ref() { return config; }
+
   // Start all FreeRTOS broadcast tasks
   bool start_tasks();
 
@@ -73,11 +76,8 @@ private:
 
   BMSCANConfig config;
 
-  // Task handles
+  // Task handle
   TaskHandle_t task_ecosystem_handle;
-  TaskHandle_t task_cell_voltage_handle;
-  TaskHandle_t task_balancing_temp_handle;
-  TaskHandle_t task_config_contactor_handle;
 
   // --- CRC-8/AUTOSAR (poly 0x2F, init 0xFF, no reflect, final XOR 0xFF) ---
   static uint8_t crc8_autosar(const uint8_t *data, uint8_t len);
@@ -98,15 +98,9 @@ private:
   // --- Helper: map internal BMS/HV states to external protocol state ---
   ExtBMSState map_bms_state() const;
 
-  // --- Task loops ---
-  void ecosystem_task_loop();      // 0x351, 0x355, 0x35C @ 1000ms; 0x356, 0x359 @ 500ms
-  void cell_voltage_task_loop();   // 0x400, 0x401 @ 100ms/module
-  void balancing_temp_task_loop(); // 0x402, 0x403 @ 500ms/module
-  void config_contactor_task_loop(); // 0x404 @ 5000ms + on change; 0x405 @ 100ms
+  // --- Task loop ---
+  void broadcast_task_loop();
 
-  // Static wrappers for FreeRTOS
-  static void ecosystem_task_wrapper(void *pv);
-  static void cell_voltage_task_wrapper(void *pv);
-  static void balancing_temp_task_wrapper(void *pv);
-  static void config_contactor_task_wrapper(void *pv);
+  // Static wrapper for FreeRTOS
+  static void broadcast_task_wrapper(void *pv);
 };

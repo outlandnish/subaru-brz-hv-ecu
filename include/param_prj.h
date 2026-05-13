@@ -19,9 +19,9 @@
     PARAM_ENTRY("CAN", canNodeId, "", 1, 127, 22, 1) \
     \
     /* BCC Hardware Configuration */ \
-    PARAM_ENTRY("BCC", bcc0DeviceCount, "", 0, 15, 8, 10) \
+    PARAM_ENTRY("BCC", bcc0DeviceCount, "", 0, 15, 0, 10) \
     PARAM_ENTRY("BCC", bcc0DeviceType, "0=MC33771, 1=MC33772", 0, 1, 1, 14) \
-    PARAM_ENTRY("BCC", bcc1DeviceCount, "", 0, 15, 8, 12) \
+    PARAM_ENTRY("BCC", bcc1DeviceCount, "", 0, 15, 0, 12) \
     PARAM_ENTRY("BCC", bcc1DeviceType, "0=MC33771, 1=MC33772", 0, 1, 1, 15) \
     \
     /* Battery Protection Limits */ \

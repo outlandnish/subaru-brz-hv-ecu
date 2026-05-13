@@ -23,7 +23,7 @@ _Min_Stack_Size = 0x400; /* required amount of stack */
 MEMORY
 {
   RAM    (xrw)    : ORIGIN = 0x20000000, LENGTH = 320K
-  FLASH  (rx)     : ORIGIN = 0x08010 000, LENGTH = 1472K
+  FLASH  (rx)     : ORIGIN = 0x08010000, LENGTH = 1472K
 }
 
 /* Sections */
@@ -138,6 +138,15 @@ SECTIONS
     . = ALIGN(4);
     _ebss = .;         /* define a global symbol at bss end */
     __bss_end__ = _ebss;
+  } >RAM
+
+  /* Not zeroed at startup — used for bootloader handoff flag at BOOTLOADER_FLAG_ADDR */
+  .noinit (NOLOAD) :
+  {
+    . = ALIGN(4);
+    *(.noinit)
+    *(.noinit*)
+    . = ALIGN(4);
   } >RAM
 
   /* User_heap_stack section, used to check that there is enough "RAM" Ram type memory left */

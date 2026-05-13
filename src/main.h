@@ -15,6 +15,7 @@
 #include "cansdo.h"
 #include "debug_serial.h"
 
+#include "boot_shared.h"
 #include "version_gen.h"
 #define FIRMWARE_VERSION ((FW_VERSION_MAJOR << 24) | (FW_VERSION_MINOR << 16) | (FW_VERSION_PATCH << 8) | 0)
 

@@ -15,3 +15,4 @@ node_modules/
 src/version_gen.h
 platformio_override.ini
 web
+__pycache__/
