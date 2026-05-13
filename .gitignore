@@ -13,4 +13,5 @@ node_modules/
 *.su
 .cache/
 src/version_gen.h
+platformio_override.ini
 web
