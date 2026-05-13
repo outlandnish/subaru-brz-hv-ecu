@@ -73,8 +73,8 @@ class BatteryManagementSystem {
   TPLSPI *tpl1;
   BatteryCellController *bcc1;
 
-  BMS_State current_state;
-  HV_State hv_state;
+  volatile BMS_State current_state;
+  volatile HV_State hv_state;
   HV_Mode hv_mode;  // Current HV mode (charging or drive)
   uint32_t hv_state_entry_time;  // Time when current HV state was entered
   uint32_t precharge_start_time;  // Time when precharge started
@@ -87,9 +87,11 @@ class BatteryManagementSystem {
   BMSChargingConfig charging_config;
   HVConnectionConfig hv_config;
 
-  // Cell voltage tracking
+  // Cell voltage tracking (protected by cell_voltage_mutex for cross-task access)
+  SemaphoreHandle_t cell_voltage_mutex;
   uint32_t cell_voltages_uv[BCC_MAX_CELLS];           // Cell voltage measurements
-  uint32_t stack_voltage_uv;                          // Stack voltage measurement
+  uint32_t stack_voltage_uv;                          // BCC0 stack voltage measurement
+  uint32_t stack_voltage_bcc1_uv;                     // BCC1 stack voltage measurement
   uint8_t cells_to_balance[BCC_MAX_CELLS];
 
   // Fault status tracking
@@ -119,8 +121,12 @@ class BatteryManagementSystem {
   uint8_t contactor_enable_pin;
   uint8_t contactor_fault_pin;
 
-  bool contactor_fault;
+  volatile bool contactor_fault;
   bool bcc1_enabled;
+
+  // HVIL interlock debounce — incremented each master loop tick while HVIL is
+  // open; cleared when HVIL is closed. Fault fires after 3 consecutive open reads.
+  uint8_t hvil_open_count;
 
   // PWM control for contactors (economizer mode)
   HardwareTimer *positive_contactor_timer;

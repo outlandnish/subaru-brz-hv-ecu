@@ -11,7 +11,7 @@
 #include <ArduinoJson.h>
 
 Adafruit_NeoPixel strip = Adafruit_NeoPixel(STATUS_LED_COUNT, STATUS_LEDS, NEO_GRB + NEO_KHZ800);
-HardwareSerial DebugSerial(USART1_RX, USART1_TX);  // Use USART1 for debug serial
+// DebugSerial is defined in src/debug_serial.cpp; extern declaration via debug_serial.h
 
 // CAN bus instances
 CANBus *m3_can = nullptr;   // M3 CAN for external communication
@@ -20,7 +20,7 @@ CANBus *hv_can = nullptr;   // HV CAN for IVT shunt and vehicle comms (500kbps)
 // IVT controller
 IVTShunt *ivt_shunt = nullptr;
 
-// CHAdeMO controller (Foccci on M3/CP CAN)
+// CHAdeMO controller (Foccci on HV CAN)
 CHAdeMOController *chademo = nullptr;
 
 // libopeninv CanOpen SDO for BMS CAN communication
@@ -98,14 +98,12 @@ void can_rx_task(void *pvParameters) {
   }
 }
 
-// IVT processing task - processes messages from HV CAN queue
+// HV CAN processing task - dispatches IVT-S and CHAdeMO frames from hv_can_queue
 void ivt_process_task(void *pvParameters) {
   CAN_FRAME frame;
 
   while (true) {
-    // TODO: replace with HV can when the hardware is fixed
-    // Wait for M3 CAN message (block for up to 10ms)
-    if (xQueueReceive(m3_can_queue, &frame, pdMS_TO_TICKS(10)) == pdTRUE) {
+    if (xQueueReceive(hv_can_queue, &frame, pdMS_TO_TICKS(10)) == pdTRUE) {
       // Process all messages through CanOpen SDO handler first
       if (hv_can_hardware && can_sdo) {
         uint32_t data[2];
@@ -113,13 +111,13 @@ void ivt_process_task(void *pvParameters) {
         hv_can_hardware->HandleRx(frame.id, data, frame.length);
       }
 
-      // Check if message is for IVT (0x521-0x528 or 0x511)
+      // IVT-S: 0x521-0x528, 0x511
       if ((frame.id >= 0x521 && frame.id <= 0x528) || frame.id == 0x511) {
         if (ivt_shunt) {
           ivt_shunt->process_can_frame(&frame);
         }
       }
-      // Check if message is for CHAdeMO (0x100, 0x102, 0x108, 0x109)
+      // CHAdeMO (Foccci): 0x100, 0x102, 0x108, 0x109
       else if (frame.id == 0x100 || frame.id == 0x102 || frame.id == 0x108 || frame.id == 0x109) {
         if (chademo) {
           chademo->process_can_message(&frame);
@@ -811,6 +809,17 @@ void console_task(void *pvParameters) {
 }
 
 void setup() {
+  // Drive HV contactor pins safe FIRST — before serial, BCC, or task init.
+  // nSLEEP=LOW keeps DRV8874 in sleep (outputs Hi-Z). Must be the very first
+  // thing so contactors can never close due to a later init exception.
+  pinMode(HV_CONTACTOR_1_PIN, OUTPUT);
+  pinMode(HV_CONTACTOR_2_PIN, OUTPUT);
+  pinMode(HV_CONTACTOR_NSLEEP_PIN, OUTPUT);
+  pinMode(HV_CONTACTOR_FAULT_PIN, INPUT);
+  digitalWrite(HV_CONTACTOR_1_PIN, LOW);
+  digitalWrite(HV_CONTACTOR_2_PIN, LOW);
+  digitalWrite(HV_CONTACTOR_NSLEEP_PIN, LOW);
+
   // Initialize Serial FIRST
   Serial.begin(115200);
   delay(2000);  // Wait for serial monitor to connect
@@ -888,18 +897,31 @@ void setup() {
                         (bcc1_config.device_count * bcc1_config.cell_count);
   Serial.printf("  Total: %d cells\r\n", total_cells);
 
+  // Initialize NeoPixel strip before the hard-fault check so we can blink LEDs.
+  strip.begin();
+  strip.show();
+
   if (total_cells == 0) {
-    Serial.println("  ERROR: No BCC devices configured! System cannot operate.");
+    Serial.println("  FATAL: No BCC devices configured! System cannot operate.");
+    // Blink all LEDs red and halt — contactors are already confirmed open above.
+    while (true) {
+      for (int i = 0; i < strip.numPixels(); i++) strip.setPixelColor(i, 0xFF0000);
+      strip.show();
+      delay(300);
+      strip.clear(); strip.show();
+      delay(300);
+    }
   }
   Serial.println();
 
-  // Initialize NeoPixel strip
-  Serial.println("Initializing status LEDs...");
-  strip.begin();
-  strip.show(); // Initialize all pixels to 'off'
+  // Status LEDs initialized above; log it here in sequence.
+  Serial.println("Status LEDs initialized.");
 
   // Configure wakeup input
   pinMode(WAKEUP, INPUT);
+
+  // HVIL interlock — pulled up; LOW = loop broken (connector removed)
+  pinMode(HVIL_DETECT_PIN, INPUT_PULLUP);
 
   // Configure AC contactor pins (safe default: contactor open, driver asleep).
   // BMS does not yet drive these; control will be added with the AC charging flow.
@@ -994,10 +1016,10 @@ void setup() {
   Serial.println("IVT shunt initialized");
   Serial.println();
 
-  // Initialize CHAdeMO controller on M3/CP CAN
+  // Initialize CHAdeMO controller on HV CAN
   Serial.println("Initializing CHAdeMO controller (Foccci)...");
   chademo = new CHAdeMOController();
-  chademo->begin(m3_can);
+  chademo->begin(hv_can);
   Serial.println("CHAdeMO controller initialized");
   Serial.println();
 
@@ -1177,7 +1199,10 @@ void setup() {
   Serial.println("===========================================");
   Serial.println();
 
-  // Start the FreeRTOS scheduler
+  // Start the FreeRTOS scheduler.
+  // The Arduino STM32 framework calls setup() directly from main() before the
+  // scheduler runs (see framework-arduinoststm32/cores/arduino/main.cpp), so
+  // this call is required and correct — it is NOT a duplicate invocation.
   Serial.println("Starting FreeRTOS scheduler...");
   vTaskStartScheduler();
 
