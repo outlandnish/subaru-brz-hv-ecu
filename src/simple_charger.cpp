@@ -118,7 +118,7 @@ void console_task(void *pvParameters);
 
 void enable_contactor() {
   if (!contactor_enabled) {
-    Serial.println("Enabling contactor (charging ON)");
+    debug_println("Enabling contactor (charging ON)");
 
     // Enable the H-bridge driver
     digitalWrite(HV_CONTACTOR_NSLEEP_PIN, HIGH);
@@ -135,7 +135,7 @@ void enable_contactor() {
 
     // Reduce to hold duty cycle (economizer mode)
     contactor_timer->setCaptureCompare(contactor_channel, CONTACTOR_HOLD_DUTY, PERCENT_COMPARE_FORMAT);
-    Serial.printf("Contactor holding at %d%% duty cycle\r\n", CONTACTOR_HOLD_DUTY);
+    debug_printf("Contactor holding at %d%% duty cycle\r\n", CONTACTOR_HOLD_DUTY);
 
     contactor_enabled = true;
     last_contactor_cycle_time = millis();  // Reset cycle timer when enabling
@@ -143,7 +143,7 @@ void enable_contactor() {
 }
 
 void cycle_contactor() {
-  Serial.println("\n=== Cycling Contactor (Resetting Charger) ===");
+  debug_println("\n=== Cycling Contactor (Resetting Charger) ===");
 
   // Disable contactor
   contactor_timer->pause();
@@ -153,11 +153,11 @@ void cycle_contactor() {
   digitalWrite(HV_CONTACTOR_NSLEEP_PIN, LOW);
 
   // Pause for 1 second
-  Serial.println("Pausing for 1 second...");
+  debug_println("Pausing for 1 second...");
   delay(CONTACTOR_CYCLE_PAUSE_MS);
 
   // Re-enable contactor
-  Serial.println("Re-enabling contactor");
+  debug_println("Re-enabling contactor");
   digitalWrite(HV_CONTACTOR_NSLEEP_PIN, HIGH);
   delay(10);
   digitalWrite(HV_CONTACTOR_2_PIN, LOW);
@@ -169,14 +169,14 @@ void cycle_contactor() {
 
   // Reduce to hold duty cycle
   contactor_timer->setCaptureCompare(contactor_channel, CONTACTOR_HOLD_DUTY, PERCENT_COMPARE_FORMAT);
-  Serial.printf("Contactor re-engaged at %d%% duty cycle\r\n", CONTACTOR_HOLD_DUTY);
+  debug_printf("Contactor re-engaged at %d%% duty cycle\r\n", CONTACTOR_HOLD_DUTY);
 
   last_contactor_cycle_time = millis();
 }
 
 void disable_contactor() {
   if (contactor_enabled) {
-    Serial.println("Disabling contactor (charging OFF)");
+    debug_println("Disabling contactor (charging OFF)");
 
     // Stop PWM
     contactor_timer->pause();
@@ -192,25 +192,25 @@ void disable_contactor() {
 
 void monitor_task(void *pvParameters) {
   // Hardware initialization in task context (like BMS)
-  Serial.println("\n=== Initializing Hardware ===");
+  debug_println("\n=== Initializing Hardware ===");
   vTaskDelay(pdMS_TO_TICKS(2000)); // Wait for system to stabilize
 
   // Initialize HV CAN bus (500kbps for IVT shunt)
-  Serial.println("Initializing HV CAN bus...");
+  debug_println("Initializing HV CAN bus...");
   hv_can = new CANBus(HV_CAN_RX, HV_CAN_TX);
   hv_can->begin(500000);
-  Serial.println("HV CAN: Ready");
+  debug_println("HV CAN: Ready");
 
   // Initialize IVT-S current/voltage shunt
-  Serial.println("Initializing IVT-S shunt...");
+  debug_println("Initializing IVT-S shunt...");
   ivt_shunt = new IVTShunt();
   ivt_shunt->begin(hv_can);
   ivt_shunt->set_debug(false);  // Disable verbose CAN debug
-  Serial.println("IVT-S: Ready");
-  Serial.println();
+  debug_println("IVT-S: Ready");
+  debug_println();
 
   // Initialize BCC0
-  Serial.println("Initializing BCC0...");
+  debug_println("Initializing BCC0...");
 
   // Setup device type (MC33772C for 6-cell battery)
   devices_0[0] = BCC_DEVICE_MC33772;
@@ -227,13 +227,13 @@ void monitor_task(void *pvParameters) {
   pinMode(BCC0_TX_CS, OUTPUT);
   digitalWrite(BCC0_TX_CS, HIGH);
 
-  Serial.println("Starting BCC0...");
+  debug_println("Starting BCC0...");
 
   // Initialize BCC hardware
   bcc_status_t error = bcc0->begin(nullptr);
 
   if (error == BCC_STATUS_SUCCESS) {
-    Serial.println("BCC0: Ready");
+    debug_println("BCC0: Ready");
     hardware_initialized = true;
     current_state = STATE_IDLE;
 
@@ -242,7 +242,7 @@ void monitor_task(void *pvParameters) {
 
     // Note: Full calibration dump available via 'dump' command
   } else {
-    Serial.printf("BCC0: Init failed (error %d)\r\n", error);
+    debug_printf("BCC0: Init failed (error %d)\r\n", error);
     current_state = STATE_ERROR;
   }
 
@@ -302,16 +302,16 @@ void monitor_task(void *pvParameters) {
 }
 
 void console_task(void *pvParameters) {
-  Serial.println("\n=== Simple Charger Console ===");
-  Serial.println("Commands: 'start', 'stop', 'end', 'status', 'dump', 'reset', 'get_voltage', 'set_voltage <uV>'");
-  Serial.println();
+  debug_println("\n=== Simple Charger Console ===");
+  debug_println("Commands: 'start', 'stop', 'end', 'status', 'dump', 'reset', 'get_voltage', 'set_voltage <uV>'");
+  debug_println();
 
   String inputBuffer = "";
 
   while (true) {
     // Check for available serial data
-    while (Serial.available() > 0) {
-      char c = Serial.read();
+    while (DebugSerial.available() > 0) {
+      char c = DebugSerial.read();
 
       if (c == '\n' || c == '\r') {
         if (inputBuffer.length() > 0) {
@@ -320,61 +320,61 @@ void console_task(void *pvParameters) {
 
           if (inputBuffer == "start") {
             if (hardware_initialized && (current_state == STATE_IDLE || current_state == STATE_COMPLETE)) {
-              Serial.println("\nStarting charging sequence...");
+              debug_println("\nStarting charging sequence...");
               current_state = STATE_CHARGING;
               enable_contactor();
               last_measurement_time = 0; // Force immediate measurement
             } else if (!hardware_initialized) {
-              Serial.println("\nERROR: Hardware not initialized yet");
+              debug_println("\nERROR: Hardware not initialized yet");
             } else {
-              Serial.println("\nERROR: Cannot start from current state");
+              debug_println("\nERROR: Cannot start from current state");
             }
           } else if (inputBuffer == "stop") {
-            Serial.println("\nStopping charging...");
+            debug_println("\nStopping charging...");
             disable_contactor();
             stop_cell_balancing();
             current_state = STATE_IDLE;
             last_contactor_cycle_time = 0;  // Reset cycle timer
           } else if (inputBuffer == "end") {
             if (hardware_initialized) {
-              Serial.println("\nEntering low power mode...");
+              debug_println("\nEntering low power mode...");
               disable_contactor();
               stop_cell_balancing();
 
               // Put BCC into low power mode
               bcc_status_t error = bcc0->enter_low_power_mode();
               if (error == BCC_STATUS_SUCCESS) {
-                Serial.println("BCC0 entered low power mode successfully");
+                debug_println("BCC0 entered low power mode successfully");
                 current_state = STATE_SLEEP;
               } else {
-                Serial.printf("ERROR: Failed to enter low power mode (error %d)\r\n", error);
+                debug_printf("ERROR: Failed to enter low power mode (error %d)\r\n", error);
                 current_state = STATE_ERROR;
               }
               last_contactor_cycle_time = 0;  // Reset cycle timer
             } else {
-              Serial.println("\nERROR: Hardware not initialized yet");
+              debug_println("\nERROR: Hardware not initialized yet");
             }
           } else if (inputBuffer == "status") {
             if (hardware_initialized) {
               // Just print the latest voltages - don't trigger new measurement
               print_voltages();
             } else {
-              Serial.println("\nERROR: Hardware not initialized yet");
+              debug_println("\nERROR: Hardware not initialized yet");
             }
           } else if (inputBuffer == "dump") {
             if (hardware_initialized) {
-              Serial.println("\nDumping calibration data...");
+              debug_println("\nDumping calibration data...");
               dump_calibration_data();
             } else {
-              Serial.println("\nERROR: Hardware not initialized yet");
+              debug_println("\nERROR: Hardware not initialized yet");
             }
           } else if (inputBuffer == "reset") {
-            Serial.println("\nResetting STM32...");
-            Serial.flush();  // Ensure message is sent before reset
+            debug_println("\nResetting STM32...");
+            DebugSerial.flush();  // Ensure message is sent before reset
             delay(100);
             NVIC_SystemReset();
           } else if (inputBuffer == "get_voltage") {
-            Serial.printf("\nTarget voltage: %lu uV (%.3f V, %.4f V per cell)\r\n",
+            debug_printf("\nTarget voltage: %lu uV (%.3f V, %.4f V per cell)\r\n",
                          target_voltage_uv,
                          target_voltage_uv / 1000000.0f,
                          target_voltage_uv / 1000000.0f / CELL_COUNT);
@@ -386,15 +386,15 @@ void console_task(void *pvParameters) {
             // Validate range (15V to 25.2V in microvolts)
             if (newVoltage >= 15000000 && newVoltage <= 25200000) {
               target_voltage_uv = newVoltage;
-              Serial.printf("\nTarget voltage set to: %lu uV (%.3f V, %.4f V per cell)\r\n",
+              debug_printf("\nTarget voltage set to: %lu uV (%.3f V, %.4f V per cell)\r\n",
                            target_voltage_uv,
                            target_voltage_uv / 1000000.0f,
                            target_voltage_uv / 1000000.0f / CELL_COUNT);
             } else {
-              Serial.printf("\nERROR: Voltage out of range. Must be 15000000-25200000 uV (15-25.2V)\r\n");
+              debug_printf("\nERROR: Voltage out of range. Must be 15000000-25200000 uV (15-25.2V)\r\n");
             }
           } else if (inputBuffer.length() > 0) {
-            Serial.printf("\nUnknown command: %s\r\n", inputBuffer.c_str());
+            debug_printf("\nUnknown command: %s\r\n", inputBuffer.c_str());
           }
 
           inputBuffer = "";
@@ -416,7 +416,7 @@ bool measure_voltages() {
   // - All enabled cells
   bcc_status_t error = bcc0->start_conversion_global_async(0x0717);
   if (error != BCC_STATUS_SUCCESS) {
-    Serial.printf("ERROR: Failed to start conversion (%d)\r\n", error);
+    debug_printf("ERROR: Failed to start conversion (%d)\r\n", error);
     return false;
   }
 
@@ -428,7 +428,7 @@ bool measure_voltages() {
   // Read cell voltages directly
   error = bcc0->get_cell_voltages(BCC_CID_DEV1, cell_voltages_uv);
   if (error != BCC_STATUS_SUCCESS) {
-    Serial.printf("ERROR: Failed to read voltages (%d)\r\n", error);
+    debug_printf("ERROR: Failed to read voltages (%d)\r\n", error);
     return false;
   }
 
@@ -484,19 +484,19 @@ void measure_temperatures() {
 void print_voltages() {
   // Print IVT-S measurements first
   if (ivt_shunt != nullptr && ivt_shunt->is_alive()) {
-    Serial.println("\n=== IVT-S Measurements ===");
-    Serial.printf("  Current:     %.2f A\r\n", ivt_shunt->get_current());
-    Serial.printf("  Voltage:     %.2f V\r\n", ivt_shunt->get_voltage());
-    Serial.printf("  Power:       %.2f kW\r\n", ivt_shunt->get_power());
-    Serial.printf("  Temperature: %.1f °C\r\n", ivt_shunt->get_temperature());
-    Serial.printf("  Amp-Hours:   %.3f Ah\r\n", ivt_shunt->get_amp_hours());
-    Serial.printf("  Energy:      %.3f kWh\r\n", ivt_shunt->get_kilowatt_hours());
+    debug_println("\n=== IVT-S Measurements ===");
+    debug_printf("  Current:     %.2f A\r\n", ivt_shunt->get_current());
+    debug_printf("  Voltage:     %.2f V\r\n", ivt_shunt->get_voltage());
+    debug_printf("  Power:       %.2f kW\r\n", ivt_shunt->get_power());
+    debug_printf("  Temperature: %.1f °C\r\n", ivt_shunt->get_temperature());
+    debug_printf("  Amp-Hours:   %.3f Ah\r\n", ivt_shunt->get_amp_hours());
+    debug_printf("  Energy:      %.3f kWh\r\n", ivt_shunt->get_kilowatt_hours());
   } else {
-    Serial.println("\n=== IVT-S Measurements ===");
-    Serial.println("  Status: OFFLINE");
+    debug_println("\n=== IVT-S Measurements ===");
+    debug_println("  Status: OFFLINE");
   }
 
-  Serial.println("\n=== Cell Voltages ===");
+  debug_println("\n=== Cell Voltages ===");
   uint32_t total_voltage = 0;
   uint32_t total_voltage_cal = 0;
   uint32_t min_v = cell_voltages_uv[0];
@@ -506,12 +506,12 @@ void print_voltages() {
     uint32_t cal_voltage = apply_calibration(cell_voltages_uv[i], i);
 
     if (cal_data.loaded) {
-      Serial.printf("  Cell %d: %.4f V  (cal: %.4f V)\r\n",
+      debug_printf("  Cell %d: %.4f V  (cal: %.4f V)\r\n",
                     i + 1,
                     cell_voltages_uv[i] / 1000000.0f,
                     cal_voltage / 1000000.0f);
     } else {
-      Serial.printf("  Cell %d: %.4f V\r\n", i + 1, cell_voltages_uv[i] / 1000000.0f);
+      debug_printf("  Cell %d: %.4f V\r\n", i + 1, cell_voltages_uv[i] / 1000000.0f);
     }
 
     total_voltage += cell_voltages_uv[i];
@@ -521,95 +521,95 @@ void print_voltages() {
   }
 
   float delta_mv = (max_v - min_v) / 1000.0f;
-  Serial.printf("\nTotal: %.3f V  |  Delta: %.2f mV\r\n",
+  debug_printf("\nTotal: %.3f V  |  Delta: %.2f mV\r\n",
                 total_voltage / 1000000.0f, delta_mv);
 
   if (cal_data.loaded) {
-    Serial.printf("Total (cal): %.3f V\r\n", total_voltage_cal / 1000000.0f);
+    debug_printf("Total (cal): %.3f V\r\n", total_voltage_cal / 1000000.0f);
   }
 
-  Serial.printf("Min: %.4f V  |  Max: %.4f V\r\n",
+  debug_printf("Min: %.4f V  |  Max: %.4f V\r\n",
                 min_v / 1000000.0f, max_v / 1000000.0f);
   
   // Print temperatures
-  Serial.println("\n=== Battery Temperatures ===");
+  debug_println("\n=== Battery Temperatures ===");
   
   // Read and print raw AN voltages
   uint32_t raw_an2_uv = 0, raw_an3_uv = 0;
   if (bcc0->get_an_voltage(BCC_CID_DEV1, 2, &raw_an2_uv) == BCC_STATUS_SUCCESS) {
-    Serial.printf("  AN2 Raw: %.3f V  (%lu uV)\r\n", raw_an2_uv / 1000000.0f, raw_an2_uv);
+    debug_printf("  AN2 Raw: %.3f V  (%lu uV)\r\n", raw_an2_uv / 1000000.0f, raw_an2_uv);
   }
   if (bcc0->get_an_voltage(BCC_CID_DEV1, 3, &raw_an3_uv) == BCC_STATUS_SUCCESS) {
-    Serial.printf("  AN3 Raw: %.3f V  (%lu uV)\r\n", raw_an3_uv / 1000000.0f, raw_an3_uv);
+    debug_printf("  AN3 Raw: %.3f V  (%lu uV)\r\n", raw_an3_uv / 1000000.0f, raw_an3_uv);
   }
   
-  Serial.printf("  Thermistor 1 (AN2): %.1f °C\r\n", temperature_an2_c);
-  Serial.printf("  Thermistor 2 (AN3): %.1f °C\r\n", temperature_an3_c);
+  debug_printf("  Thermistor 1 (AN2): %.1f °C\r\n", temperature_an2_c);
+  debug_printf("  Thermistor 2 (AN3): %.1f °C\r\n", temperature_an3_c);
   float avg_temp = (temperature_an2_c + temperature_an3_c) / 2.0f;
   float max_temp = (temperature_an2_c > temperature_an3_c) ? temperature_an2_c : temperature_an3_c;
-  Serial.printf("  Average: %.1f °C  |  Max: %.1f °C\r\n", avg_temp, max_temp);
+  debug_printf("  Average: %.1f °C  |  Max: %.1f °C\r\n", avg_temp, max_temp);
 }
 
 void print_json_status() {
   // Output JSON for web app consumption
-  Serial.print("{");
+  DebugSerial.print("{");
   
   // Charging state
-  Serial.print("\"charging_state\":\"");
+  DebugSerial.print("\"charging_state\":\"");
   switch (current_state) {
-    case STATE_IDLE: Serial.print("idle"); break;
-    case STATE_CHARGING: Serial.print("charging"); break;
-    case STATE_BALANCING: Serial.print("balancing"); break;
-    case STATE_COMPLETE: Serial.print("complete"); break;
-    case STATE_ERROR: Serial.print("error"); break;
-    case STATE_SLEEP: Serial.print("sleep"); break;
-    default: Serial.print("unknown"); break;
+    case STATE_IDLE: DebugSerial.print("idle"); break;
+    case STATE_CHARGING: DebugSerial.print("charging"); break;
+    case STATE_BALANCING: DebugSerial.print("balancing"); break;
+    case STATE_COMPLETE: DebugSerial.print("complete"); break;
+    case STATE_ERROR: DebugSerial.print("error"); break;
+    case STATE_SLEEP: DebugSerial.print("sleep"); break;
+    default: DebugSerial.print("unknown"); break;
   }
-  Serial.print("\",");
+  DebugSerial.print("\",");
   
   // Target voltage
-  Serial.printf("\"target_voltage\":%.3f,", target_voltage_uv / 1000000.0f);
+  debug_printf("\"target_voltage\":%.3f,", target_voltage_uv / 1000000.0f);
   
   // Cell voltages
-  Serial.print("\"cell_voltages\":[");
+  DebugSerial.print("\"cell_voltages\":[");
   for (uint8_t i = 0; i < CELL_COUNT; i++) {
-    if (i > 0) Serial.print(",");
-    Serial.printf("%.4f", cell_voltages_uv[i] / 1000000.0f);
+    if (i > 0) DebugSerial.print(",");
+    debug_printf("%.4f", cell_voltages_uv[i] / 1000000.0f);
   }
-  Serial.print("],");
+  DebugSerial.print("],");
   
   // Temperatures
   float avg_temp = (temperature_an2_c + temperature_an3_c) / 2.0f;
   float max_temp = (temperature_an2_c > temperature_an3_c) ? temperature_an2_c : temperature_an3_c;
-  Serial.print("\"temperatures\":{");
-  Serial.printf("\"thermistor1\":%.1f,", temperature_an2_c);
-  Serial.printf("\"thermistor2\":%.1f,", temperature_an3_c);
-  Serial.printf("\"average\":%.1f,", avg_temp);
-  Serial.printf("\"max\":%.1f", max_temp);
-  Serial.print("},");
+  DebugSerial.print("\"temperatures\":{");
+  debug_printf("\"thermistor1\":%.1f,", temperature_an2_c);
+  debug_printf("\"thermistor2\":%.1f,", temperature_an3_c);
+  debug_printf("\"average\":%.1f,", avg_temp);
+  debug_printf("\"max\":%.1f", max_temp);
+  DebugSerial.print("},");
   
   // IVT-S shunt data
-  Serial.print("\"ivt_shunt\":{");
+  DebugSerial.print("\"ivt_shunt\":{");
   if (ivt_shunt != nullptr && ivt_shunt->is_alive()) {
-    Serial.printf("\"online\":true,");
-    Serial.printf("\"current\":%.2f,", ivt_shunt->get_current());
-    Serial.printf("\"voltage\":%.2f,", ivt_shunt->get_voltage());
-    Serial.printf("\"power\":%.2f,", ivt_shunt->get_power());
-    Serial.printf("\"temperature\":%.1f,", ivt_shunt->get_temperature());
-    Serial.printf("\"amp_hours\":%.3f,", ivt_shunt->get_amp_hours());
-    Serial.printf("\"energy\":%.3f", ivt_shunt->get_kilowatt_hours());
+    debug_printf("\"online\":true,");
+    debug_printf("\"current\":%.2f,", ivt_shunt->get_current());
+    debug_printf("\"voltage\":%.2f,", ivt_shunt->get_voltage());
+    debug_printf("\"power\":%.2f,", ivt_shunt->get_power());
+    debug_printf("\"temperature\":%.1f,", ivt_shunt->get_temperature());
+    debug_printf("\"amp_hours\":%.3f,", ivt_shunt->get_amp_hours());
+    debug_printf("\"energy\":%.3f", ivt_shunt->get_kilowatt_hours());
   } else {
-    Serial.print("\"online\":false,");
-    Serial.print("\"current\":0.0,");
-    Serial.print("\"voltage\":0.0,");
-    Serial.print("\"power\":0.0,");
-    Serial.print("\"temperature\":0.0,");
-    Serial.print("\"amp_hours\":0.0,");
-    Serial.print("\"energy\":0.0");
+    DebugSerial.print("\"online\":false,");
+    DebugSerial.print("\"current\":0.0,");
+    DebugSerial.print("\"voltage\":0.0,");
+    DebugSerial.print("\"power\":0.0,");
+    DebugSerial.print("\"temperature\":0.0,");
+    DebugSerial.print("\"amp_hours\":0.0,");
+    DebugSerial.print("\"energy\":0.0");
   }
-  Serial.print("}");
+  DebugSerial.print("}");
   
-  Serial.println("}");
+  debug_println("}");
 }
 
 uint32_t get_total_voltage() {
@@ -633,12 +633,12 @@ uint32_t get_max_cell_delta() {
 }
 
 void apply_cell_balancing() {
-  Serial.println("\n=== Enabling Cell Balancing ===");
+  debug_println("\n=== Enabling Cell Balancing ===");
 
   // First, enable the cell balancing feature globally
   bcc_status_t error = bcc0->enable_cell_balancing(BCC_CID_DEV1, true);
   if (error != BCC_STATUS_SUCCESS) {
-    Serial.printf("ERROR: Failed to enable cell balancing feature (%d)\r\n", error);
+    debug_printf("ERROR: Failed to enable cell balancing feature (%d)\r\n", error);
     return;
   }
 
@@ -664,22 +664,22 @@ void apply_cell_balancing() {
 
       error = bcc0->set_cell_balancing(BCC_CID_DEV1, i, true, timer);
       if (error == BCC_STATUS_SUCCESS) {
-        Serial.printf("  Cell %d: Balancing enabled (%.2f mV above min)\r\n",
+        debug_printf("  Cell %d: Balancing enabled (%.2f mV above min)\r\n",
                      i + 1, delta / 1000.0f);
         any_balancing = true;
       } else {
-        Serial.printf("  Cell %d: Failed to enable balancing\r\n", i + 1);
+        debug_printf("  Cell %d: Failed to enable balancing\r\n", i + 1);
       }
     }
   }
 
   if (!any_balancing) {
-    Serial.println("  No cells need balancing");
+    debug_println("  No cells need balancing");
   }
 }
 
 void stop_cell_balancing() {
-  Serial.println("\n=== Stopping Cell Balancing ===");
+  debug_println("\n=== Stopping Cell Balancing ===");
 
   // Disable balancing for all individual cells
   for (uint8_t i = 0; i < CELL_COUNT; i++) {
@@ -698,18 +698,18 @@ void load_calibration_data() {
       bcc0->read_fuse_mirror(cid, 0x04, &cal_data.cell_offset_1) == BCC_STATUS_SUCCESS &&
       bcc0->read_fuse_mirror(cid, 0x05, &cal_data.cell_gain) == BCC_STATUS_SUCCESS) {
     cal_data.loaded = true;
-    Serial.println("\n=== Calibration Data Loaded ===");
-    Serial.printf("  VREF Cal:       0x%04X (%d decimal, %d signed)\n",
+    debug_println("\n=== Calibration Data Loaded ===");
+    debug_printf("  VREF Cal:       0x%04X (%d decimal, %d signed)\n",
                   cal_data.vref_cal, cal_data.vref_cal, (int16_t)cal_data.vref_cal);
-    Serial.printf("  Cell Offset 0:  0x%04X (%d decimal, %d signed)\n",
+    debug_printf("  Cell Offset 0:  0x%04X (%d decimal, %d signed)\n",
                   cal_data.cell_offset_0, cal_data.cell_offset_0, (int16_t)cal_data.cell_offset_0);
-    Serial.printf("  Cell Offset 1:  0x%04X (%d decimal, %d signed)\n",
+    debug_printf("  Cell Offset 1:  0x%04X (%d decimal, %d signed)\n",
                   cal_data.cell_offset_1, cal_data.cell_offset_1, (int16_t)cal_data.cell_offset_1);
-    Serial.printf("  Cell Gain:      0x%04X (%d decimal, %d signed)\n",
+    debug_printf("  Cell Gain:      0x%04X (%d decimal, %d signed)\n",
                   cal_data.cell_gain, cal_data.cell_gain, (int16_t)cal_data.cell_gain);
-    Serial.println("=================================\n");
+    debug_println("=================================\n");
   } else {
-    Serial.println("WARNING: Failed to load calibration data from fuse mirror");
+    debug_println("WARNING: Failed to load calibration data from fuse mirror");
   }
 }
 
@@ -734,58 +734,58 @@ uint32_t apply_calibration(uint32_t raw_voltage_uv, uint8_t cell_index) {
 }
 
 void dump_calibration_data() {
-  Serial.println("\n========================================");
-  Serial.println("BCC Fuse Mirror & EEPROM Dump");
-  Serial.println("========================================\n");
+  debug_println("\n========================================");
+  debug_println("BCC Fuse Mirror & EEPROM Dump");
+  debug_println("========================================\n");
 
   for (uint8_t dev = 0; dev < DEVICE_COUNT; dev++) {
     bcc_cid_t cid = static_cast<bcc_cid_t>(dev + 1);
 
     // Fuse Mirror Dump
-    Serial.printf("=== CID %d Fuse Mirror ===\n", cid);
+    debug_printf("=== CID %d Fuse Mirror ===\n", cid);
     for (uint8_t addr = 0x00; addr <= 0x1F; addr++) {
       uint16_t fuseVal;
       bcc_status_t error = bcc0->read_fuse_mirror(cid, addr, &fuseVal);
       if (error == BCC_STATUS_SUCCESS) {
-        Serial.printf("0x%02X: 0x%04X\n", addr, fuseVal);
+        debug_printf("0x%02X: 0x%04X\n", addr, fuseVal);
       } else {
-        Serial.printf("0x%02X: ERROR %d\n", addr, error);
+        debug_printf("0x%02X: ERROR %d\n", addr, error);
       }
     }
-    Serial.println();
+    debug_println();
 
     // EEPROM Dump (128 bytes, 16 bytes per line)
-    Serial.printf("=== CID %d EEPROM ===\n", cid);
+    debug_printf("=== CID %d EEPROM ===\n", cid);
     for (uint16_t addr = 0x00; addr <= 0x7F; addr++) {
       uint8_t eepromVal;
       bcc_status_t error = bcc0->read_eeprom(cid, (uint8_t)addr, &eepromVal);
 
       if (addr % 16 == 0) {
-        Serial.printf("0x%02X: ", addr);
+        debug_printf("0x%02X: ", addr);
       }
 
       if (error == BCC_STATUS_SUCCESS) {
-        Serial.printf("%02X ", eepromVal);
+        debug_printf("%02X ", eepromVal);
       } else {
-        Serial.print("XX ");
+        DebugSerial.print("XX ");
       }
 
       if ((addr + 1) % 16 == 0 || addr == 0x7F) {
-        Serial.println();
+        debug_println();
       }
     }
-    Serial.println();
+    debug_println();
   }
 
-  Serial.println("========================================");
-  Serial.println("Dump complete");
-  Serial.println("========================================\n");
+  debug_println("========================================");
+  debug_println("Dump complete");
+  debug_println("========================================\n");
 }
 
 void update_charging_state() {
   // Measure voltages
   if (!measure_voltages()) {
-    Serial.println("ERROR: Failed to measure voltages");
+    debug_println("ERROR: Failed to measure voltages");
     current_state = STATE_ERROR;
     disable_contactor();
     return;
@@ -799,76 +799,76 @@ void update_charging_state() {
 
   switch (current_state) {
     case STATE_IDLE:
-      Serial.println("\n=== State: IDLE ===");
-      Serial.println("Type 'start' to begin charging");
+      debug_println("\n=== State: IDLE ===");
+      debug_println("Type 'start' to begin charging");
       break;
 
     case STATE_CHARGING:
-      Serial.println("\n=== State: CHARGING ===");
+      debug_println("\n=== State: CHARGING ===");
 
       // Check if we've reached target voltage
       if (total_voltage >= target_voltage_uv) {
-        Serial.printf("Target voltage reached! (%.3f V >= %.3f V)\r\n",
+        debug_printf("Target voltage reached! (%.3f V >= %.3f V)\r\n",
                      total_voltage / 1000000.0f,
                      target_voltage_uv / 1000000.0f);
 
         // Check if cells need balancing
         if (cell_delta > BALANCE_THRESHOLD_UV) {
-          Serial.printf("Cell imbalance detected (%.2f mV), switching to balancing\r\n",
+          debug_printf("Cell imbalance detected (%.2f mV), switching to balancing\r\n",
                        cell_delta / 1000.0f);
           current_state = STATE_BALANCING;
           disable_contactor();  // Stop charging while balancing
           apply_cell_balancing();
         } else {
-          Serial.println("Cells are balanced, charging complete!");
+          debug_println("Cells are balanced, charging complete!");
           current_state = STATE_COMPLETE;
           disable_contactor();
           stop_cell_balancing();
         }
       } else {
-        Serial.printf("Charging... (%.3f V / %.3f V)\r\n",
+        debug_printf("Charging... (%.3f V / %.3f V)\r\n",
                      total_voltage / 1000000.0f,
                      target_voltage_uv / 1000000.0f);
       }
       break;
 
     case STATE_BALANCING:
-      Serial.println("\n=== State: BALANCING ===");
+      debug_println("\n=== State: BALANCING ===");
 
       // Check if balancing is complete
       if (cell_delta <= BALANCE_THRESHOLD_UV) {
-        Serial.printf("Balancing complete (delta: %.2f mV)\r\n", cell_delta / 1000.0f);
+        debug_printf("Balancing complete (delta: %.2f mV)\r\n", cell_delta / 1000.0f);
         stop_cell_balancing();
 
         // Check if we still need to charge
         if (total_voltage < target_voltage_uv) {
-          Serial.println("Resuming charging...");
+          debug_println("Resuming charging...");
           current_state = STATE_CHARGING;
           enable_contactor();
         } else {
-          Serial.println("Charging complete!");
+          debug_println("Charging complete!");
           current_state = STATE_COMPLETE;
         }
       } else {
-        Serial.printf("Balancing... (delta: %.2f mV)\r\n", cell_delta / 1000.0f);
+        debug_printf("Balancing... (delta: %.2f mV)\r\n", cell_delta / 1000.0f);
       }
       break;
 
     case STATE_COMPLETE:
-      Serial.println("\n=== State: COMPLETE ===");
-      Serial.printf("Battery charged to %.3f V\r\n", total_voltage / 1000000.0f);
-      Serial.printf("Cell delta: %.2f mV\r\n", cell_delta / 1000.0f);
-      Serial.println("Type 'start' to charge again or 'end' for low power mode");
+      debug_println("\n=== State: COMPLETE ===");
+      debug_printf("Battery charged to %.3f V\r\n", total_voltage / 1000000.0f);
+      debug_printf("Cell delta: %.2f mV\r\n", cell_delta / 1000.0f);
+      debug_println("Type 'start' to charge again or 'end' for low power mode");
       break;
 
     case STATE_SLEEP:
-      Serial.println("\n=== State: SLEEP ===");
-      Serial.println("BCC in low power mode. Reset device to wake up.");
+      debug_println("\n=== State: SLEEP ===");
+      debug_println("BCC in low power mode. Reset device to wake up.");
       break;
 
     case STATE_ERROR:
-      Serial.println("\n=== State: ERROR ===");
-      Serial.println("System in error state. Reset to recover.");
+      debug_println("\n=== State: ERROR ===");
+      debug_println("System in error state. Reset to recover.");
       break;
 
     default:
@@ -880,13 +880,13 @@ void setup() {
   // delay(5000);
 
   // Initialize Serial
-  Serial.begin(115200);
-  Serial.println("\n\n========================================");
-  Serial.println("  Simple Single-Device Battery Charger");
-  Serial.println("========================================");
-  Serial.println("Target: 21V (3.5V per cell)");
-  Serial.println("Balance threshold: 10mV");
-  Serial.println("========================================\n");
+  DebugSerial.begin(115200);
+  debug_println("\n\n========================================");
+  debug_println("  Simple Single-Device Battery Charger");
+  debug_println("========================================");
+  debug_println("Target: 21V (3.5V per cell)");
+  debug_println("Balance threshold: 10mV");
+  debug_println("========================================\n");
 
   // Initialize contactor control pins
   pinMode(HV_CONTACTOR_2_PIN, OUTPUT);
@@ -908,11 +908,11 @@ void setup() {
     contactor_timer->setOverflow(CONTACTOR_PWM_FREQ, HERTZ_FORMAT);
     contactor_timer->setCaptureCompare(contactor_channel, 0, PERCENT_COMPARE_FORMAT);
     contactor_timer->pause(); // Start paused
-    Serial.println("Contactor control initialized with PWM economizer");
+    debug_println("Contactor control initialized with PWM economizer");
   } else {
-    Serial.println("ERROR: Failed to initialize contactor PWM!");
+    debug_println("ERROR: Failed to initialize contactor PWM!");
   }
-  Serial.println();
+  debug_println();
 
   // Create monitoring task
   BaseType_t result = xTaskCreate(
@@ -925,7 +925,7 @@ void setup() {
   );
 
   if (result != pdPASS) {
-    Serial.println("ERROR: Failed to create monitor task!");
+    debug_println("ERROR: Failed to create monitor task!");
     while (1) delay(1000);
   }
 
@@ -940,18 +940,18 @@ void setup() {
   );
 
   if (result != pdPASS) {
-    Serial.println("ERROR: Failed to create console task!");
+    debug_println("ERROR: Failed to create console task!");
     while (1) delay(1000);
   }
 
-  Serial.println("Starting FreeRTOS scheduler...");
-  Serial.println("========================================\n");
+  debug_println("Starting FreeRTOS scheduler...");
+  debug_println("========================================\n");
 
   // Start the FreeRTOS scheduler
   vTaskStartScheduler();
 
   // Should never reach here
-  Serial.println("ERROR: Scheduler failed to start!");
+  debug_println("ERROR: Scheduler failed to start!");
   while (1);
 }
 

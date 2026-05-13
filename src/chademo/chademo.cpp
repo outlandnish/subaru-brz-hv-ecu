@@ -29,7 +29,7 @@ CHAdeMOController::CHAdeMOController() {
 
 void CHAdeMOController::begin(CANBus *bus) {
   can_bus = bus;
-  Serial.println("CHAdeMO: Controller initialized");
+  debug_println("CHAdeMO: Controller initialized");
 }
 
 void CHAdeMOController::process_can_message(CAN_FRAME *frame) {
@@ -56,7 +56,7 @@ void CHAdeMOController::process_can_message(CAN_FRAME *frame) {
         charger_connected = true;
       }
 
-      Serial.printf("CHAdeMO RX 0x102: V=%dV, I=%dA, mode=%d\r\n",
+      debug_printf("CHAdeMO RX 0x102: V=%dV, I=%dA, mode=%d\r\n",
                     evse_status.voltage_v, evse_status.current_a, evse_status.opmode);
       break;
     }
@@ -73,7 +73,7 @@ void CHAdeMOController::process_can_message(CAN_FRAME *frame) {
       evse_max_voltage_v = max_voltage_dv / 10;
       evse_max_current_a = max_current_da / 10;
 
-      Serial.printf("CHAdeMO RX 0x108: MaxV=%dV, MaxI=%dA\r\n",
+      debug_printf("CHAdeMO RX 0x108: MaxV=%dV, MaxI=%dA\r\n",
                     evse_max_voltage_v, evse_max_current_a);
       break;
     }
@@ -107,7 +107,7 @@ void CHAdeMOController::send_battery_request() {
 
   can_bus->sendMessage(CHADEMO_BATTERY_STATUS_ID, data, 8);
 
-  Serial.printf("CHAdeMO TX 0x109: BatV=%d.%dV, TargV=%d.%dV, I=%d.%dA, SOC=%d%%, En=%d\r\n",
+  debug_printf("CHAdeMO TX 0x109: BatV=%d.%dV, TargV=%d.%dV, I=%d.%dA, SOC=%d%%, En=%d\r\n",
                 battery_request.battery_voltage_v / 10, battery_request.battery_voltage_v % 10,
                 battery_request.target_voltage_v / 10, battery_request.target_voltage_v % 10,
                 battery_request.charge_current_a / 10, battery_request.charge_current_a % 10,
@@ -119,7 +119,7 @@ void CHAdeMOController::check_timeout() {
   uint32_t time_since_rx = get_time_since_last_rx();
 
   if (time_since_rx > CHADEMO_RX_TIMEOUT_MS && charger_connected) {
-    Serial.printf("CHAdeMO: Timeout detected (%lu ms since last RX)\r\n", time_since_rx);
+    debug_printf("CHAdeMO: Timeout detected (%lu ms since last RX)\r\n", time_since_rx);
     current_state = CHADEMO_TIMEOUT;
     session_active = false;
     charger_connected = false;
@@ -161,7 +161,7 @@ void CHAdeMOController::update() {
       if (battery_request.enable && charger_connected) {
         current_state = CHADEMO_PRECHARGE;
         state_entry_time = current_time;
-        Serial.println("CHAdeMO: Starting precharge");
+        debug_println("CHAdeMO: Starting precharge");
       }
       break;
 
@@ -170,7 +170,7 @@ void CHAdeMOController::update() {
       if (current_time - state_entry_time > 5000) {  // 5 second precharge
         current_state = CHADEMO_CHARGING;
         state_entry_time = current_time;
-        Serial.println("CHAdeMO: Precharge complete, starting charge");
+        debug_println("CHAdeMO: Precharge complete, starting charge");
       }
       break;
 
@@ -179,7 +179,7 @@ void CHAdeMOController::update() {
       if (!battery_request.enable) {
         current_state = CHADEMO_ENDING;
         state_entry_time = current_time;
-        Serial.println("CHAdeMO: Charge ending");
+        debug_println("CHAdeMO: Charge ending");
       }
       break;
 
@@ -188,7 +188,7 @@ void CHAdeMOController::update() {
       if (current_time - state_entry_time > 2000) {  // 2 second grace period
         current_state = CHADEMO_IDLE;
         session_active = false;
-        Serial.println("CHAdeMO: Charge session ended");
+        debug_println("CHAdeMO: Charge session ended");
       }
       break;
 
@@ -201,7 +201,7 @@ void CHAdeMOController::update() {
 }
 
 void CHAdeMOController::start_charging(uint16_t target_voltage_v, uint16_t max_current_a) {
-  Serial.printf("CHAdeMO: Starting charge session (target %dV, max %dA)\r\n",
+  debug_printf("CHAdeMO: Starting charge session (target %dV, max %dA)\r\n",
                 target_voltage_v, max_current_a);
 
   battery_request.target_voltage_v = target_voltage_v * 10;  // Convert to 0.1V resolution
@@ -214,7 +214,7 @@ void CHAdeMOController::start_charging(uint16_t target_voltage_v, uint16_t max_c
 }
 
 void CHAdeMOController::stop_charging() {
-  Serial.println("CHAdeMO: Stopping charge session");
+  debug_println("CHAdeMO: Stopping charge session");
 
   battery_request.enable = false;
   battery_request.charge_current_a = 0;

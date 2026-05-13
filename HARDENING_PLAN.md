@@ -108,45 +108,45 @@ done at any time.
 
 ### Items
 
-**L1. Fix duplicate `DebugSerial` definition**
+**L1. Fix duplicate `DebugSerial` definition** ✓
 - Remove `HardwareSerial DebugSerial(USART1_RX, USART1_TX);` from `src/main.cpp:14`. The definition in `src/debug_serial.cpp` is canonical; `src/debug_serial.h` has the `extern` declaration. `main.h` already includes `debug_serial.h` so `main.cpp` still sees the symbol.
 
-**L2. Remove `#define Serial DebugSerial`; replace callsites**
+**L2. Remove `#define Serial DebugSerial`; replace callsites** ✓
 - Remove the macro from `src/debug_serial.h:4`.
 - Run a targeted replace of `Serial.` → `DebugSerial.` in every file under `src/` that uses it (`main.cpp`, `bms/bms.cpp`, `battery_char.cpp`, `chademo/chademo.cpp`, `ivt-s/ivt_shunt.cpp`, `hal/dma_config.cpp`, `simple_charger.cpp`).
 - Leave `lib/` alone for now (lib/libopeninv-arduino has its own Serial usage; that's a separate change).
 
-**L3. Add a FreeRTOS mutex around `DebugSerial`**
+**L3. Add a FreeRTOS mutex around `DebugSerial`** ✓
 - File: `src/debug_serial.h` / `src/debug_serial.cpp`
 - Create a `SemaphoreHandle_t debug_serial_mutex` initialised in `debug_serial_init()` (a new function called from `setup()` before task creation).
 - Provide `debug_printf(const char *fmt, ...)` and `debug_println(const char *str)` wrappers that take the mutex with a 10ms timeout, call `DebugSerial.printf`/`println`, then release.
 - Replace `DebugSerial.printf` callsites with `debug_printf`.
 
-**L4. Gate HV CAN frame printing on `hv_can_monitor_enabled`**
+**L4. Gate HV CAN frame printing on `hv_can_monitor_enabled`** ✓
 - File: `src/main.cpp` `can_rx_task` (~line 86)
 - The help text already documents `hv can monitor on/off` commands. Wire the existing `hv_can_monitor_enabled` bool to actually guard the `Serial.printf` block. This already exists — it just isn't being checked.
 
-**L5. Remove dead CAN test state**
+**L5. Remove dead CAN test state** ✓
 - File: `src/main.cpp:36–38`
 - `m3_can_test_enabled`, `m3_can_test_interval_ms`, `m3_can_test_count` are declared but never written or read by any task. Either implement the test generator (a simple periodic task sending IVT-shaped frames on M3) or remove the variables and the console commands that reference them (`m3 can test` entries in help at ~line 233).
 
-**L6. Gate boot serial delay on a compile flag**
+**L6. Gate boot serial delay on a compile flag** ✓
 - File: `src/main.cpp:816`
 - Replace `delay(2000)` with `#ifdef DEBUG_WAIT_FOR_SERIAL\n delay(2000);\n #endif`. Add `-D DEBUG_WAIT_FOR_SERIAL` to `[env:hv-ecu]` debug build but not to a future `[env:hv-ecu-release]`.
 
-**L7. Call `update_hv_led()` in SOC display mode**
+**L7. Call `update_hv_led()` in SOC display mode** ✓
 - File: `src/bms/bms.cpp` `update_status_leds()` (~line 1498)
 - After `led_pattern_soc()`, before the early `return`, call `update_hv_led()` so the last pixel always shows HV state regardless of display mode.
 
-**L8. Fix `state_str[]` out-of-bounds in console**
+**L8. Fix `state_str[]` out-of-bounds in console** ✓
 - File: `src/main.cpp:286`
 - Array has 7 entries but includes `"Cooldown"` which doesn't exist in `BMS_State` (6 members: Initialization, Idle, Charging, CellBalancing, Sleep, Error). Either remove `"Cooldown"` or add a `BMS_Cooldown` state. Also add a bounds check before indexing.
 
-**L9. Fix `led_pattern_soc()` divide-by-zero guard**
+**L9. Fix `led_pattern_soc()` divide-by-zero guard** ✓
 - File: `src/bms/bms.cpp` (~line 1422)
 - `uint16_t per_led = 100 / count;` — add `if (count == 0) return;` before this line.
 
-**L10. CAN init failure must not silently continue**
+**L10. CAN init failure must not silently continue** ✓
 - File: `src/main.cpp` (~line 917–932)
 - If `m3_can->begin()` or `hv_can->begin()` returns false: log, blink error LEDs, and halt (or set a `can_failed` flag that is checked in `master_task_loop` and forces `BMS_Error` immediately). Continuing with a null CAN bus means the IVT shunt will never report alive and charging will not engage — but there's no user-visible failure indication.
 
