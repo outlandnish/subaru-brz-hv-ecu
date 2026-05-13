@@ -1,5 +1,5 @@
 #pragma once
-#include "hal/hv-ecu-v0-pins.h"
+#include "hal/hv-ecu-v1-pins.h"
 #include <STM32FreeRTOS.h>
 #include "BatteryCellController.h"
 #include "SPI.h"
@@ -198,6 +198,11 @@ class BatteryManagementSystem {
   void led_pattern_balancing();
   void led_pattern_complete();
   void led_pattern_error();
+  void led_pattern_soc();           // SOC bar across all 10 LEDs
+
+  // Display-mode toggling between state view and SOC view
+  uint8_t led_display_mode;         // 0 = state, 1 = SOC
+  uint32_t led_mode_switch_time;
   uint32_t color_rgb(uint8_t r, uint8_t g, uint8_t b);
 
   // Static task wrappers for FreeRTOS

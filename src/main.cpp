@@ -11,6 +11,7 @@
 #include <ArduinoJson.h>
 
 Adafruit_NeoPixel strip = Adafruit_NeoPixel(STATUS_LED_COUNT, STATUS_LEDS, NEO_GRB + NEO_KHZ800);
+HardwareSerial DebugSerial(USART1_RX, USART1_TX);  // Use USART1 for debug serial
 
 // CAN bus instances
 CANBus *m3_can = nullptr;   // M3 CAN for external communication
@@ -664,9 +665,9 @@ void console_task(void *pvParameters) {
 
             // Show contactor states
             Serial.printf("Positive Contactor: %s\r\n",
-                         digitalRead(CONTACTOR_1_PIN) == HIGH ? "CLOSED" : "OPEN");
+                         digitalRead(HV_CONTACTOR_1_PIN) == HIGH ? "CLOSED" : "OPEN");
             Serial.printf("Negative Contactor: %s\r\n",
-                         digitalRead(CONTACTOR_2_PIN) == HIGH ? "CLOSED" : "OPEN");
+                         digitalRead(HV_CONTACTOR_2_PIN) == HIGH ? "CLOSED" : "OPEN");
             Serial.println();
           }
           else if (inputBuffer == "bcc dump") {
@@ -897,6 +898,19 @@ void setup() {
   strip.begin();
   strip.show(); // Initialize all pixels to 'off'
 
+  // Configure wakeup input
+  pinMode(WAKEUP, INPUT);
+
+  // Configure AC contactor pins (safe default: contactor open, driver asleep).
+  // BMS does not yet drive these; control will be added with the AC charging flow.
+  pinMode(AC_CONTACTOR_1_PIN, OUTPUT);
+  pinMode(AC_CONTACTOR_2_PIN, OUTPUT);
+  pinMode(AC_CONTACTOR_NSLEEP_PIN, OUTPUT);
+  pinMode(AC_CONTACTOR_FAULT_PIN, INPUT);
+  digitalWrite(AC_CONTACTOR_1_PIN, LOW);
+  digitalWrite(AC_CONTACTOR_2_PIN, LOW);
+  digitalWrite(AC_CONTACTOR_NSLEEP_PIN, LOW);
+
   // Initialize CAN buses
   Serial.println("Initializing CAN buses...");
 
@@ -1015,10 +1029,10 @@ void setup() {
   // Configure contactor control pins
   Serial.println("Configuring contactor control...");
   bms->set_contactor_pins(
-    CONTACTOR_1_PIN,
-    CONTACTOR_2_PIN,
-    CONTACTOR_NSLEEP_PIN,
-    CONTACTOR_FAULT_PIN
+    HV_CONTACTOR_1_PIN,
+    HV_CONTACTOR_2_PIN,
+    HV_CONTACTOR_NSLEEP_PIN,
+    HV_CONTACTOR_FAULT_PIN
   );
 
   // Initialize BMS (BCC hardware initialization)
@@ -1255,3 +1269,4 @@ void dump_bcc_config(BatteryManagementSystem *bms) {
 void loop() {
   // Empty - FreeRTOS tasks run instead
 }
+

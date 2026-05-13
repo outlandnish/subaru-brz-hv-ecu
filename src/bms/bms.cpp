@@ -1,7 +1,6 @@
 #include "bms.h"
 #include "Arduino.h"
-
-#define Serial SerialUSB
+#include "debug_serial.h"
 
 BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *config0, BatteryCellControllerConfig *config1) {
   bcc0_config = config0;
@@ -50,6 +49,8 @@ BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *co
   stack_voltage_uv = 0;
   status_leds = nullptr;
   led_animation_step = 0;
+  led_display_mode = 0;
+  led_mode_switch_time = 0;
   last_successful_measurement = 0;
   communication_timeout_ms = Param::GetInt(Param::commTimeout);
   communication_lost = false;
@@ -1357,8 +1358,8 @@ void BatteryManagementSystem::set_led_color(uint8_t led, uint32_t color) {
 
 void BatteryManagementSystem::set_state_leds(uint32_t color) {
   if (!status_leds) return;
-  // LEDs 0-1 for BMS state indication (LED 2 is now dedicated to HV state)
-  for (uint8_t i = 0; i < 2; i++) {
+  // Paint all LEDs with the state color (state mode owns the whole strip).
+  for (uint8_t i = 0; i < status_leds->numPixels(); i++) {
     status_leds->setPixelColor(i, color);
   }
 }
@@ -1367,43 +1368,73 @@ void BatteryManagementSystem::update_hv_led() {
   if (!status_leds) return;
   uint8_t brightness;
 
-  // LED 2: HV system state
+  // In state mode the HV LED is the last pixel on the strip (most visible
+  // "summary" LED next to the SOC bar when it's shown).
+  uint8_t hv_idx = status_leds->numPixels() - 1;
+
   switch (hv_state) {
     case HV_Disabled:
-      // Off - HV system disabled
-      set_led_color(2, color_rgb(0, 0, 0));
+      set_led_color(hv_idx, color_rgb(0, 0, 0));
       break;
 
     case HV_Precharge:
-      // Yellow pulsing - precharging
       led_animation_step = (led_animation_step + 1) % 100;
       brightness = (led_animation_step < 50) ? (led_animation_step * 5) : ((100 - led_animation_step) * 5);
-      set_led_color(2, color_rgb(brightness, brightness, 0));  // Yellow pulse
+      set_led_color(hv_idx, color_rgb(brightness, brightness, 0));  // Yellow pulse
       break;
 
     case HV_Active:
-      // Solid green - HV active and stable
-      set_led_color(2, color_rgb(0, 255, 0));
+      set_led_color(hv_idx, color_rgb(0, 255, 0));
       break;
 
     case HV_Fault:
-      // Flashing red - HV fault
       led_animation_step = (led_animation_step + 1) % 60;
       if (led_animation_step < 30) {
-        set_led_color(2, color_rgb(255, 0, 0));  // Bright red
+        set_led_color(hv_idx, color_rgb(255, 0, 0));
       } else {
-        set_led_color(2, color_rgb(0, 0, 0));    // Off
+        set_led_color(hv_idx, color_rgb(0, 0, 0));
       }
       break;
 
     case HV_Shutdown:
-      // Orange - shutting down
-      set_led_color(2, color_rgb(255, 128, 0));
+      set_led_color(hv_idx, color_rgb(255, 128, 0));
       break;
 
     default:
-      set_led_color(2, color_rgb(0, 0, 0));
+      set_led_color(hv_idx, color_rgb(0, 0, 0));
       break;
+  }
+}
+
+// SOC bar across all 10 LEDs. Each LED = 10% SOC. Color shifts with SOC.
+void BatteryManagementSystem::led_pattern_soc() {
+  if (!status_leds) return;
+  uint8_t soc = get_soc();
+  uint8_t count = status_leds->numPixels();
+
+  uint32_t color;
+  if (soc < 20)      color = color_rgb(255, 0, 0);    // Red
+  else if (soc < 50) color = color_rgb(255, 128, 0);  // Orange
+  else if (soc < 80) color = color_rgb(255, 255, 0);  // Yellow
+  else               color = color_rgb(0, 255, 0);    // Green
+
+  // Each LED represents 100/count percent.
+  uint16_t per_led = 100 / count;  // 10 for 10 LEDs
+  uint8_t full = soc / per_led;
+  uint8_t remainder = soc % per_led;
+
+  for (uint8_t i = 0; i < count; i++) {
+    if (i < full) {
+      set_led_color(i, color);
+    } else if (i == full && remainder > 0) {
+      uint8_t scale = (remainder * 255) / per_led;
+      uint8_t r = (((color >> 16) & 0xFF) * scale) / 255;
+      uint8_t g = (((color >> 8) & 0xFF) * scale) / 255;
+      uint8_t b = ((color & 0xFF) * scale) / 255;
+      set_led_color(i, color_rgb(r, g, b));
+    } else {
+      set_led_color(i, 0);
+    }
   }
 }
 
@@ -1416,14 +1447,16 @@ void BatteryManagementSystem::led_pattern_idle() {
 }
 
 void BatteryManagementSystem::led_pattern_charging() {
-  // Green wave/chase pattern showing charging progress on state LEDs (0-1)
-  led_animation_step = (led_animation_step + 1) % 2;
+  if (!status_leds) return;
+  // Green chase across all LEDs.
+  uint8_t count = status_leds->numPixels();
+  led_animation_step = (led_animation_step + 1) % count;
 
-  for (uint8_t i = 0; i < 2; i++) {
+  for (uint8_t i = 0; i < count; i++) {
     if (i == led_animation_step) {
-      set_led_color(i, color_rgb(0, 255, 0)); // Bright green
+      set_led_color(i, color_rgb(0, 255, 0)); // Bright green head
     } else {
-      set_led_color(i, color_rgb(0, 64, 0)); // Dim green
+      set_led_color(i, color_rgb(0, 64, 0));  // Dim green trail
     }
   }
 }
@@ -1453,10 +1486,23 @@ void BatteryManagementSystem::led_pattern_error() {
 void BatteryManagementSystem::update_status_leds() {
   if (!status_leds) return;
 
-  // Update BMS state LEDs (0-1)
+  // Toggle between state view and SOC view every 3 seconds, but only after
+  // the SOC has been initialized so we don't show a stale 0% bar.
+  const uint32_t LED_MODE_PERIOD_MS = 3000;
+  uint32_t now = millis();
+  if (soc_initialized && (now - led_mode_switch_time >= LED_MODE_PERIOD_MS)) {
+    led_display_mode ^= 1;
+    led_mode_switch_time = now;
+  }
+
+  if (soc_initialized && led_display_mode == 1) {
+    led_pattern_soc();
+    status_leds->show();
+    return;
+  }
+
   switch (current_state) {
     case BMS_Initialization:
-      // Purple - system initializing
       set_state_leds(color_rgb(128, 0, 128));
       break;
 
@@ -1465,7 +1511,6 @@ void BatteryManagementSystem::update_status_leds() {
       break;
 
     case BMS_Charging:
-      // Check if we're close to target using filtered voltages
       if (has_reached_target_voltage(cell_voltages_uv, bcc0_config->cell_count)) {
         led_pattern_complete();
       } else {
@@ -1482,7 +1527,6 @@ void BatteryManagementSystem::update_status_leds() {
       break;
 
     case BMS_Sleep:
-      // All state LEDs off
       set_state_leds(0);
       break;
 
@@ -1490,7 +1534,7 @@ void BatteryManagementSystem::update_status_leds() {
       break;
   }
 
-  // Update HV state LED (2)
+  // HV summary LED overrides the last pixel during state mode.
   update_hv_led();
 
   status_leds->show();
