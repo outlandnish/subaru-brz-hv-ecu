@@ -67,8 +67,12 @@ BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *co
   // Initialize IVT and CHAdeMO pointers
   ivt_shunt = nullptr;
   chademo = nullptr;
-  m3_can = nullptr;
   hv_can = nullptr;
+#ifdef BMS_M3_CAN
+  m3_can = nullptr;
+  m3_mgr = nullptr;
+  pcs_enabled = (bool)Param::GetInt(Param::pcsEnabled);
+#endif
 
   // Initialize SOC tracking
   current_soc_percent = Param::GetFloat(Param::initSocPercent);

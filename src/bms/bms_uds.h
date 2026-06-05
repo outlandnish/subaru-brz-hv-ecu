@@ -101,6 +101,7 @@ private:
     uint16_t precharge_min_voltage_mv;   // DID 0xD206
     uint8_t  chain0_module_count;        // DID 0xD300
     uint8_t  chain1_module_count;        // DID 0xD301
+    uint8_t  pcs_enabled;               // DID 0xD302
 
     // iso14229 server callback
     static UDSErr_t uds_callback(UDSServer_t *srv, UDSEvent_t evt, void *arg);

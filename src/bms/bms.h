@@ -174,6 +174,7 @@ class BatteryManagementSystem {
 #ifdef BMS_M3_CAN
   CANBus *m3_can;
   M3CANManager *m3_mgr;
+  bool pcs_enabled;   // runtime: send PCS messages (0x20A/0x22A/0x212/0x3B2/0x2B2)
 #endif
 
   // NeoPixel status LEDs
@@ -190,9 +191,7 @@ class BatteryManagementSystem {
   void master_task_loop();
   void bcc0_monitor_task_loop();
   void bcc1_monitor_task_loop();
-#ifdef BMS_M3_CAN
   void hv_can_task_loop();
-#endif
 
   bool measure_cell_voltages(BatteryCellController *bcc, uint32_t *cell_voltages);
   bool measure_stack_voltage(BatteryCellController *bcc, uint32_t *stack_voltage);
@@ -244,9 +243,7 @@ class BatteryManagementSystem {
   static void master_task_wrapper(void *pvParameters);
   static void bcc0_monitor_task_wrapper(void *pvParameters);
   static void bcc1_monitor_task_wrapper(void *pvParameters);
-#ifdef BMS_M3_CAN
   static void hv_can_task_wrapper(void *pvParameters);
-#endif
 
   public:
     BatteryManagementSystem(BatteryCellControllerConfig *config0,
