@@ -92,22 +92,22 @@ bool CANBus::begin(uint32_t baudrate) {
   uint32_t bs1, bs2;
 
   switch(baudrate) {
-    case CAN_BPS_125K:  prescaler = 24; bs1 = CAN_BS1_12TQ; bs2 = CAN_BS2_3TQ; break;  // 48MHz/(24*16) = 125k
-    case CAN_BPS_250K:  prescaler = 12; bs1 = CAN_BS1_12TQ; bs2 = CAN_BS2_3TQ; break;  // 48MHz/(12*16) = 250k
-    case CAN_BPS_500K:  prescaler = 6;  bs1 = CAN_BS1_12TQ; bs2 = CAN_BS2_3TQ; break;  // 48MHz/(6*16) = 500k
-    case CAN_BPS_1000K: prescaler = 3;  bs1 = CAN_BS1_12TQ; bs2 = CAN_BS2_3TQ; break;  // 48MHz/(3*16) = 1M
+    case CAN_BPS_125K:  prescaler = 24; bs1 = CAN_BS1_13TQ; bs2 = CAN_BS2_2TQ; break;  // 48MHz/(24*16) = 125k, 87.5% sample point
+    case CAN_BPS_250K:  prescaler = 12; bs1 = CAN_BS1_13TQ; bs2 = CAN_BS2_2TQ; break;  // 48MHz/(12*16) = 250k, 87.5% sample point
+    case CAN_BPS_500K:  prescaler = 6;  bs1 = CAN_BS1_13TQ; bs2 = CAN_BS2_2TQ; break;  // 48MHz/(6*16) = 500k, 87.5% sample point
+    case CAN_BPS_1000K: prescaler = 3;  bs1 = CAN_BS1_13TQ; bs2 = CAN_BS2_2TQ; break;  // 48MHz/(3*16) = 1M, 87.5% sample point
     default: return false;
   }
 
   hcan->Init.Prescaler = prescaler;
   hcan->Init.Mode = CAN_MODE_NORMAL;
-  hcan->Init.SyncJumpWidth = CAN_SJW_1TQ;
+  hcan->Init.SyncJumpWidth = CAN_SJW_2TQ;
   hcan->Init.TimeSeg1 = bs1;
   hcan->Init.TimeSeg2 = bs2;
   hcan->Init.TimeTriggeredMode = DISABLE;
-  hcan->Init.AutoBusOff = DISABLE;
+  hcan->Init.AutoBusOff = ENABLE;
   hcan->Init.AutoWakeUp = DISABLE;
-  hcan->Init.AutoRetransmission = ENABLE;
+  hcan->Init.AutoRetransmission = DISABLE;
   hcan->Init.ReceiveFifoLocked = DISABLE;
   hcan->Init.TransmitFifoPriority = DISABLE;
 

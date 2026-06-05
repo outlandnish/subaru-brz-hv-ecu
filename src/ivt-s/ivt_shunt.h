@@ -23,12 +23,14 @@ public:
   ~IVTShunt();
 
   void begin(CANBus *can_bus);
+  void configure();              // Send STOP → cfg_u1 → cfg_u2 → STORE → START sequence
+  bool configure_if_needed();  // Configure only if ivtConfigured param is unset
 
   // Control methods
   void start();
   void stop();
   void restart();       // Resets accumulated Ah and kWh
-  void set_defaults();   // Reset to factory defaults
+  void set_defaults();  // Reset to factory defaults
 
   // State accessors
   float get_current() const { return current_amps; }
@@ -75,22 +77,23 @@ private:
   uint32_t frame_count;
   uint32_t last_message_time;
   bool debug_enabled;
+  bool configuring;
   bool first_frame;
 
   // Previous values for accumulation
   long previous_as;  // Previous ampere-seconds
   long previous_wh;  // Previous watt-hours
 
-  // Error tracking
-  uint8_t message_counter;
-  uint8_t last_message_counter;
+  // Error tracking — counter tracked per message ID (0x521–0x528 → index 0–7)
+  uint8_t last_msg_counter[8];
   bool counter_error;
   bool system_error;
   bool any_measurement_error;
-  bool precision_error;
+  bool channel_error;
   bool overcurrent_flag;
 
   // Message handlers
+  void handle_0x511_response(CAN_FRAME *frame);
   void handle_0x521_current(CAN_FRAME *frame);
   void handle_0x522_voltage(CAN_FRAME *frame);
   void handle_0x523_voltage2(CAN_FRAME *frame);
@@ -103,8 +106,6 @@ private:
   // Helper methods
   void send_command(const uint8_t data[8]);
   void send_store();
-  void init_current_mode();
-  void print_frame(CAN_FRAME *frame);
-  void parse_error_status(uint8_t status_byte);
+  void parse_error_status(uint8_t status_byte, uint32_t msg_id);
   bool validate_muxid(uint8_t muxid, uint8_t expected, const char* msg_name);
 };

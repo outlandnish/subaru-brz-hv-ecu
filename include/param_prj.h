@@ -24,34 +24,64 @@
     PARAM_ENTRY("BCC", bcc1DeviceCount, "", 0, 15, 0, 12) \
     PARAM_ENTRY("BCC", bcc1DeviceType, "0=MC33771, 1=MC33772", 0, 1, 1, 15) \
     \
-    /* Battery Protection Limits */ \
-    PARAM_ENTRY("Battery", targetCellVolt, "mV", 3000, 4300, 3600, 4) \
+    /* Battery Configuration */ \
     PARAM_ENTRY("Battery", batteryCapacity, "Ah", 10.0, 200.0, 50.0, 5) \
     PARAM_ENTRY("Battery", minSocPercent, "%", 0.0, 50.0, 10.0, 6) \
     PARAM_ENTRY("Battery", maxSocPercent, "%", 50.0, 100.0, 100.0, 7) \
     PARAM_ENTRY("Battery", initSocPercent, "%", 0.0, 100.0, 50.0, 8) \
     \
     /* Charging Configuration */ \
-    PARAM_ENTRY("Charging", maxChargeCurrent, "A", 5.0, 200.0, 30.0, 20) \
-    PARAM_ENTRY("Charging", balanceThreshold, "mV", 10.0, 200.0, 50.0, 21) \
-    PARAM_ENTRY("Charging", balanceTarget, "mV", 5.0, 100.0, 10.0, 22) \
     PARAM_ENTRY("Charging", balanceTimerMin, "min", 1, 60, 5, 23) \
     PARAM_ENTRY("Charging", measureInterval, "ms", 10, 1000, 20, 24) \
+    PARAM_ENTRY("Charging", balanceHvOffMin, "min", 0, 120, 5, 25) \
+    \
+    /* IVT-S Configuration */ \
+    PARAM_ENTRY("IVT", ivtConfigured, "0=unconfigured, 1=configured", 0, 1, 0, 60) \
     \
     /* HV System Configuration */ \
-    PARAM_ENTRY("HV", prechargeMargin, "V", 1.0, 50.0, 10.0, 30) \
-    PARAM_ENTRY("HV", prechargeTimeout, "ms", 1000, 30000, 5000, 31) \
     PARAM_ENTRY("HV", prechargeCheckInt, "ms", 10, 1000, 100, 32) \
     \
     /* Contactor PWM Configuration */ \
     PARAM_ENTRY("Contactor", pwmFrequency, "Hz", 1000, 50000, 25000, 40) \
     PARAM_ENTRY("Contactor", engageDuty, "%", 50, 100, 100, 41) \
-    PARAM_ENTRY("Contactor", holdDuty, "%", 10, 80, 30, 42) \
+    PARAM_ENTRY("Contactor", holdDuty0, "%", 10, 80, 30, 42) \
     PARAM_ENTRY("Contactor", engageTime, "ms", 10, 500, 100, 43) \
+    PARAM_ENTRY("Contactor", holdDuty1, "%", 10, 80, 30, 45) \
     \
     /* Timing */ \
     PARAM_ENTRY("Timing", commTimeout, "ms", 1000, 30000, 5000, 51) \
     PARAM_ENTRY("Timing", faultCheckInt, "ms", 100, 30000, 5000, 52) \
+    \
+    /* UDS writable protection thresholds (DID 0xD110-0xD119) */ \
+    PARAM_ENTRY("Protect", ovpThresholdMv, "mV", 2000, 4500, 4200, 70) \
+    PARAM_ENTRY("Protect", ovpWarningMv, "mV", 2000, 4500, 4150, 71) \
+    PARAM_ENTRY("Protect", uvpThresholdMv, "mV", 1000, 4000, 2500, 72) \
+    PARAM_ENTRY("Protect", uvpWarningMv, "mV", 1000, 4000, 2600, 73) \
+    PARAM_ENTRY("Protect", otpThresholdCdeg, "0.01°C", -5000, 8500, 4500, 74) \
+    PARAM_ENTRY("Protect", otpWarningCdeg, "0.01°C", -5000, 8500, 4000, 75) \
+    PARAM_ENTRY("Protect", utpThresholdCdeg, "0.01°C", -5000, 8500, -1000, 76) \
+    PARAM_ENTRY("Protect", utpWarningCdeg, "0.01°C", -5000, 8500, -500, 77) \
+    PARAM_ENTRY("Protect", ocpChargeMa, "mA", 0, 500000, 30000, 78) \
+    PARAM_ENTRY("Protect", ocpDischargeMa, "mA", 0, 500000, 30000, 79) \
+    \
+    /* UDS writable balance config (DID 0xD100-0xD106) */ \
+    PARAM_ENTRY("Balance", balanceMode, "0=off,1=delta,2=abs", 0, 2, 1, 80) \
+    PARAM_ENTRY("Balance", balanceDeltaMv, "mV", 0, 1000, 50, 81) \
+    PARAM_ENTRY("Balance", balanceAbsMv, "mV", 0, 5000, 3600, 82) \
+    PARAM_ENTRY("Balance", balanceInhibitPackMv, "mV", 0, 500000, 0, 83) \
+    PARAM_ENTRY("Balance", balanceMinCellMv, "mV", 0, 5000, 2500, 84) \
+    PARAM_ENTRY("Balance", sohX100, "", 0, 10000, 10000, 85) \
+    PARAM_ENTRY("Balance", socMethod, "0=coulomb,1=voltage", 0, 1, 0, 86) \
+    \
+    /* Auxiliary contactor configuration (DID 0xD200-0xD207) */ \
+    PARAM_ENTRY("Contactor", auxContactorMode, "0=precharge+main,1=ac_dc", 0, 1, 0, 90) \
+    PARAM_ENTRY("Contactor", auxPin0Role, "mode0:0=precharge,1=main mode1:0=ac,1=dc", 0, 1, 0, 91) \
+    PARAM_ENTRY("Contactor", auxPin1Role, "mode0:0=precharge,1=main mode1:0=ac,1=dc", 0, 1, 1, 92) \
+    PARAM_ENTRY("Contactor", nacsPin, "Arduino pin, 255=disabled", 0, 255, 255, 93) \
+    PARAM_ENTRY("Contactor", prechargeCompletionMv, "mV", 0, 50000, 5000, 94) \
+    PARAM_ENTRY("Contactor", prechargeTimeoutMs, "ms", 0, 60000, 10000, 95) \
+    PARAM_ENTRY("Contactor", prechargeMinVoltageMv, "mV", 0, 500000, 0, 96) \
+    PARAM_ENTRY("Contactor", nacsDcLevel, "logic level = DC mode", 0, 1, 1, 97) \
     \
     /* Read-only spot values */ \
     VALUE_ENTRY(version, "", 1000) \

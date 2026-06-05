@@ -7,6 +7,9 @@
 #include <HardwareTimer.h>
 
 class Adafruit_NeoPixel;  // forward declaration — full header only needed in bms.cpp
+#ifdef BMS_M3_CAN
+class M3CANManager;        // forward declaration — full header only needed in bms.cpp
+#endif
 #include "can.h"
 #include "ivt-s/ivt_shunt.h"
 #include "chademo/chademo.h"
@@ -143,6 +146,17 @@ class BatteryManagementSystem {
   uint32_t negative_contactor_channel;
   bool contactors_use_pwm;
 
+
+  // Auxiliary contactor configuration
+  uint8_t aux_contactor_mode;   // 0=precharge+main, 1=ac_dc
+  uint8_t aux_pin0_role;        // role of positive_contactor_pin in current mode
+  uint8_t aux_pin1_role;        // role of negative_contactor_pin in current mode
+  uint8_t nacs_pin;             // Arduino pin for NACS AC/DC switch, 255=disabled
+  uint8_t nacs_dc_level;        // logic level that means DC
+
+  // Auto-balance on HV-off idle
+  uint32_t hv_off_since_ms;
+
   // IVT Current Shunt
   IVTShunt *ivt_shunt;
 
@@ -156,8 +170,11 @@ class BatteryManagementSystem {
   bool soc_initialized;                // Whether SOC has been initialized
 
   // CAN buses
-  CANBus *m3_can;  // Also used for CHAdeMO (CP CAN)
   CANBus *hv_can;
+#ifdef BMS_M3_CAN
+  CANBus *m3_can;
+  M3CANManager *m3_mgr;
+#endif
 
   // NeoPixel status LEDs
   Adafruit_NeoPixel *status_leds;
@@ -173,7 +190,9 @@ class BatteryManagementSystem {
   void master_task_loop();
   void bcc0_monitor_task_loop();
   void bcc1_monitor_task_loop();
+#ifdef BMS_M3_CAN
   void hv_can_task_loop();
+#endif
 
   bool measure_cell_voltages(BatteryCellController *bcc, uint32_t *cell_voltages);
   bool measure_stack_voltage(BatteryCellController *bcc, uint32_t *stack_voltage);
@@ -225,7 +244,9 @@ class BatteryManagementSystem {
   static void master_task_wrapper(void *pvParameters);
   static void bcc0_monitor_task_wrapper(void *pvParameters);
   static void bcc1_monitor_task_wrapper(void *pvParameters);
+#ifdef BMS_M3_CAN
   static void hv_can_task_wrapper(void *pvParameters);
+#endif
 
   public:
     BatteryManagementSystem(BatteryCellControllerConfig *config0,
@@ -240,7 +261,11 @@ class BatteryManagementSystem {
     // IVT and CHAdeMO configuration
     void set_ivt_shunt(IVTShunt *shunt);
     void set_chademo(CHAdeMOController *chademo_controller);
+    void set_hv_can(CANBus *hv_can_bus);
+#ifdef BMS_M3_CAN
     void set_can_buses(CANBus *m3_can_bus, CANBus *hv_can_bus);
+    void set_m3_can_manager(M3CANManager *mgr);
+#endif
 
     // Start the BMS tasks
     bool start_tasks();

@@ -95,19 +95,19 @@ BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *co
   fault_check_interval_ms = Param::GetInt(Param::faultCheckInt);
 
   // Load charging config from parameters
-  charging_config.target_cell_voltage = Param::GetFloat(Param::targetCellVolt) / 1000.0f;  // Convert mV to V
-  charging_config.balance_threshold_mv = Param::GetFloat(Param::balanceThreshold);
-  charging_config.balance_target_mv = Param::GetFloat(Param::balanceTarget);
-  charging_config.balancing_timer_min = Param::GetInt(Param::balanceTimerMin);
-  charging_config.measurement_interval_ms = Param::GetInt(Param::measureInterval);
-  charging_config.battery_capacity_ah = Param::GetFloat(Param::batteryCapacity);
-  charging_config.max_charge_current_a = Param::GetFloat(Param::maxChargeCurrent);
-  charging_config.min_soc_percent = Param::GetFloat(Param::minSocPercent);
-  charging_config.max_soc_percent = Param::GetFloat(Param::maxSocPercent);
+  charging_config.target_cell_voltage   = Param::GetInt(Param::ovpThresholdMv) / 1000.0f;
+  charging_config.balance_threshold_mv  = (float)Param::GetInt(Param::balanceDeltaMv);
+  charging_config.balance_target_mv     = (float)Param::GetInt(Param::balanceAbsMv);
+  charging_config.balancing_timer_min   = (uint16_t)Param::GetInt(Param::balanceTimerMin);
+  charging_config.measurement_interval_ms = (uint16_t)Param::GetInt(Param::measureInterval);
+  charging_config.battery_capacity_ah   = Param::GetFloat(Param::batteryCapacity);
+  charging_config.max_charge_current_a  = Param::GetInt(Param::ocpChargeMa) / 1000.0f;
+  charging_config.min_soc_percent       = Param::GetFloat(Param::minSocPercent);
+  charging_config.max_soc_percent       = Param::GetFloat(Param::maxSocPercent);
 
   // Load HV connection config from parameters
-  hv_config.precharge_voltage_margin_v = Param::GetFloat(Param::prechargeMargin);
-  hv_config.precharge_timeout_ms = Param::GetInt(Param::prechargeTimeout);
+  hv_config.precharge_voltage_margin_v  = Param::GetInt(Param::prechargeCompletionMv) / 1000.0f;
+  hv_config.precharge_timeout_ms        = Param::GetInt(Param::prechargeTimeoutMs);
   hv_config.precharge_check_interval_ms = Param::GetInt(Param::prechargeCheckInt);
 
   // Initialize PWM contactor control
@@ -206,10 +206,20 @@ void BatteryManagementSystem::set_chademo(CHAdeMOController *chademo_controller)
   chademo = chademo_controller;
 }
 
+void BatteryManagementSystem::set_hv_can(CANBus *hv_can_bus) {
+  hv_can = hv_can_bus;
+}
+
+#ifdef BMS_M3_CAN
 void BatteryManagementSystem::set_can_buses(CANBus *m3_can_bus, CANBus *hv_can_bus) {
   m3_can = m3_can_bus;
   hv_can = hv_can_bus;
 }
+
+void BatteryManagementSystem::set_m3_can_manager(M3CANManager *mgr) {
+  m3_mgr = mgr;
+}
+#endif
 
 bool BatteryManagementSystem::start_tasks() {
   debug_println("BMS: Starting FreeRTOS tasks...");
@@ -997,8 +1007,9 @@ void BatteryManagementSystem::control_contactors(bool enable_contactor1, bool en
   if (contactors_use_pwm) {
     // PWM economizer mode for both contactors
     uint8_t engage_duty = Param::GetInt(Param::engageDuty);
-    uint8_t hold_duty = Param::GetInt(Param::holdDuty);
     uint16_t engage_time_ms = Param::GetInt(Param::engageTime);
+    uint8_t hold0 = Param::GetInt(Param::holdDuty0);
+    uint8_t hold1 = Param::GetInt(Param::holdDuty1);
 
     // Contactor 1
     if (enable_contactor1) {
@@ -1007,7 +1018,7 @@ void BatteryManagementSystem::control_contactors(bool enable_contactor1, bool en
       positive_contactor_timer->resume();
       delay(engage_time_ms);
       // Drop to hold duty
-      positive_contactor_timer->setCaptureCompare(positive_contactor_channel, hold_duty, PERCENT_COMPARE_FORMAT);
+      positive_contactor_timer->setCaptureCompare(positive_contactor_channel, hold0, PERCENT_COMPARE_FORMAT);
     } else {
       positive_contactor_timer->pause();
       positive_contactor_timer->setCaptureCompare(positive_contactor_channel, 0, PERCENT_COMPARE_FORMAT);
@@ -1020,7 +1031,7 @@ void BatteryManagementSystem::control_contactors(bool enable_contactor1, bool en
       negative_contactor_timer->resume();
       delay(engage_time_ms);
       // Drop to hold duty
-      negative_contactor_timer->setCaptureCompare(negative_contactor_channel, hold_duty, PERCENT_COMPARE_FORMAT);
+      negative_contactor_timer->setCaptureCompare(negative_contactor_channel, hold1, PERCENT_COMPARE_FORMAT);
     } else {
       negative_contactor_timer->pause();
       negative_contactor_timer->setCaptureCompare(negative_contactor_channel, 0, PERCENT_COMPARE_FORMAT);

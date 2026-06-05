@@ -16,6 +16,10 @@
 #include "bms/bms_can.h"
 #include "bms/bms_uds.h"
 #include "bms/bms_uds_tp.h"
+#ifdef BMS_M3_CAN
+#include "bms/m3_can.h"
+#endif
+#include "param_save.h"
 #include <STM32FreeRTOS.h>
 
 #pragma GCC diagnostic push
@@ -25,6 +29,10 @@ extern "C" void *_sbrk(int);
 
 // ─── CAN buses ───────────────────────────────────────────────────────────────
 static CANBus *hv_can = nullptr;
+#ifdef BMS_M3_CAN
+static CANBus *m3_can = nullptr;
+static M3CANManager *m3_mgr = nullptr;
+#endif
 
 // ─── Subsystems ──────────────────────────────────────────────────────────────
 static IVTShunt                    *ivt_shunt = nullptr;
@@ -60,6 +68,8 @@ static void can_rx_task(void *) {
 
 // ─── IVT-S frame dispatch task ────────────────────────────────────────────────
 static void ivt_process_task(void *) {
+  if (ivt_shunt) ivt_shunt->configure_if_needed();
+
   CAN_FRAME frame;
   while (true) {
     if (xQueueReceive(hv_can_queue, &frame, pdMS_TO_TICKS(10)) == pdTRUE) {
@@ -82,10 +92,17 @@ void setup() {
   debug_println("Protocol: BMS CAN v0.1");
 
   Param::LoadDefaults();
+  parm_load();
 
   // ── CAN buses ────────────────────────────────────────────────────────────
   hv_can = new CANBus(HV_CAN_RX, HV_CAN_TX);
-  hv_can->begin(500000);  // 500 kbps per protocol spec
+  hv_can->begin(500000);  // 500 kbps
+
+#ifdef BMS_M3_CAN
+  m3_can = new CANBus(M3_CAN_RX, M3_CAN_TX);
+  m3_can->begin(500000);  // 500 kbps
+  m3_mgr = new M3CANManager(m3_can);
+#endif
 
   hv_can_queue  = xQueueCreate(CAN_QUEUE_LENGTH, sizeof(CAN_FRAME));
   uds_can_queue = xQueueCreate(CAN_QUEUE_LENGTH, sizeof(CAN_FRAME));
@@ -93,17 +110,22 @@ void setup() {
   // ── IVT-S ────────────────────────────────────────────────────────────────
   ivt_shunt = new IVTShunt();
   ivt_shunt->begin(hv_can);
-  ivt_shunt->start();
 
-  // ── BCC hardware config — Taycan 6S2P, MC33772B always ───────────────────
-  const uint8_t chain0_count = 1;
-  const uint8_t chain1_count = 1;
+  // ── BCC hardware config — device counts from persisted params ────────────
+  // bcc0DeviceCount == 0 means "not yet configured"; BCC init is deferred until
+  // the user writes a nonzero count via UDS DID 0xD401 and reboots.
+  const uint8_t chain0_count = (uint8_t)Param::GetInt(Param::bcc0DeviceCount);
+  const uint8_t chain1_count = (uint8_t)Param::GetInt(Param::bcc1DeviceCount);
+  const bcc_device_t chain0_type = (Param::GetInt(Param::bcc0DeviceType) == 0)
+                                   ? BCC_DEVICE_MC33771 : BCC_DEVICE_MC33772;
+  const bcc_device_t chain1_type = (Param::GetInt(Param::bcc1DeviceType) == 0)
+                                   ? BCC_DEVICE_MC33771 : BCC_DEVICE_MC33772;
 
   bcc0_config.device_count = chain0_count;
   bcc0_config.cell_count   = 6;
-  bcc0_config.device_type  = BCC_DEVICE_MC33772;
+  bcc0_config.device_type  = chain0_type;
   for (uint8_t i = 0; i < chain0_count; i++)
-    bcc0_config.devices[i] = BCC_DEVICE_MC33772;
+    bcc0_config.devices[i] = chain0_type;
   bcc0_config.enable_pin = BCC0_ENABLE;
   bcc0_config.intb_pin   = BCC0_INTB;
   bcc0_config.cs_pin     = BCC0_TX_CS;
@@ -111,23 +133,26 @@ void setup() {
 
   bcc1_config.device_count = chain1_count;
   bcc1_config.cell_count   = 6;
-  bcc1_config.device_type  = BCC_DEVICE_MC33772;
+  bcc1_config.device_type  = chain1_type;
   for (uint8_t i = 0; i < chain1_count; i++)
-    bcc1_config.devices[i] = BCC_DEVICE_MC33772;
+    bcc1_config.devices[i] = chain1_type;
   bcc1_config.enable_pin = BCC1_ENABLE;
   bcc1_config.intb_pin   = BCC1_INTB;
   bcc1_config.cs_pin     = BCC1_TX_CS;
   bcc1_config.loopback   = false;
 
+  if (chain0_count == 0)
+    debug_println("BMS: BCC0 not configured — set bcc0DeviceCount via UDS and reboot");
+
   // ── BMS ──────────────────────────────────────────────────────────────────
   BMSChargingConfig charging_cfg;
-  charging_cfg.target_cell_voltage      = Param::GetFloat(Param::targetCellVolt) / 1000.0f;
-  charging_cfg.balance_threshold_mv     = Param::GetFloat(Param::balanceThreshold);
-  charging_cfg.balance_target_mv        = Param::GetFloat(Param::balanceTarget);
+  charging_cfg.target_cell_voltage      = Param::GetInt(Param::ovpThresholdMv) / 1000.0f;
+  charging_cfg.balance_threshold_mv     = (float)Param::GetInt(Param::balanceDeltaMv);
+  charging_cfg.balance_target_mv        = (float)Param::GetInt(Param::balanceAbsMv);
   charging_cfg.balancing_timer_min      = (uint16_t)Param::GetInt(Param::balanceTimerMin);
   charging_cfg.measurement_interval_ms  = (uint16_t)Param::GetInt(Param::measureInterval);
   charging_cfg.battery_capacity_ah      = Param::GetFloat(Param::batteryCapacity);
-  charging_cfg.max_charge_current_a     = Param::GetFloat(Param::maxChargeCurrent);
+  charging_cfg.max_charge_current_a     = Param::GetInt(Param::ocpChargeMa) / 1000.0f;
   charging_cfg.min_soc_percent          = Param::GetFloat(Param::minSocPercent);
   charging_cfg.max_soc_percent          = Param::GetFloat(Param::maxSocPercent);
 
@@ -142,14 +167,19 @@ void setup() {
     HV_CONTACTOR_FAULT_PIN
   );
   bms->set_ivt_shunt(ivt_shunt);
-  bms->set_can_buses(nullptr, hv_can);
+#ifdef BMS_M3_CAN
+  bms->set_can_buses(m3_can, hv_can);
+  bms->set_m3_can_manager(m3_mgr);
+#else
+  bms->set_hv_can(hv_can);
+#endif
 
   // ── BMSCANBroadcaster ────────────────────────────────────────────────────
   bms_can = new BMSCANBroadcaster(bms, ivt_shunt, hv_can);
 
   const uint16_t total_cells = bms->get_bcc0_total_cell_count() + bms->get_bcc1_total_cell_count();
-  const float target_cell_v  = Param::GetFloat(Param::targetCellVolt) / 1000.0f;  // mV → V
-  const float max_chg_a      = Param::GetFloat(Param::maxChargeCurrent);
+  const float target_cell_v  = Param::GetInt(Param::ovpThresholdMv) / 1000.0f;
+  const float max_chg_a      = Param::GetInt(Param::ocpChargeMa) / 1000.0f;
 
   BMSCANConfig can_cfg;
   // Pack charge voltage limit: 10 mV/LSB (ecosystem standard for 0x351)
@@ -161,15 +191,17 @@ void setup() {
   can_cfg.discharge_voltage_10mv = (uint16_t)((2500.0f * total_cells) / 10.0f);
   can_cfg.soh_percent_x100     = 10000;  // 100.00% default; writable via UDS DID 0xD105 later
   can_cfg.balance_mode         = BALANCE_DELTA_V;
-  can_cfg.balance_param_mv     = (uint16_t)Param::GetFloat(Param::balanceThreshold);
+  can_cfg.balance_param_mv     = (uint16_t)Param::GetInt(Param::balanceDeltaMv);
   can_cfg.chain0_modules       = chain0_count;
   can_cfg.chain1_modules       = chain1_count;
   can_cfg.contactor_closed_mask = 0x00;  // All contactors open at boot
 
   bms_can->set_config(can_cfg);
 
-  debug_printf("BMS CAN: chain0=%d modules, chain1=%d modules, total cells=%d\r\n",
-               chain0_count, chain1_count, total_cells);
+  debug_printf("BMS CAN: chain0=%d modules (%s), chain1=%d modules (%s), total cells=%d\r\n",
+               chain0_count, (chain0_type == BCC_DEVICE_MC33771) ? "MC33771" : "MC33772",
+               chain1_count, (chain1_type == BCC_DEVICE_MC33771) ? "MC33771" : "MC33772",
+               total_cells);
 
   // ── UDS server ───────────────────────────────────────────────────────────
   bms_uds = new BMSUDSServer(bms, ivt_shunt, &bms_can->get_config_ref());
