@@ -84,8 +84,8 @@ BMSUDSServer::BMSUDSServer(BatteryManagementSystem *bms_, IVTShunt *ivt_,
     can_node_id         = (uint8_t)Param::GetInt(Param::canNodeId);
     pwm_frequency_hz    = (uint16_t)Param::GetInt(Param::pwmFrequency);
     engage_duty_pct     = (uint8_t)Param::GetInt(Param::engageDuty);
-    hold_duty0_pct      = (uint8_t)Param::GetInt(Param::holdDuty0);
-    hold_duty1_pct      = (uint8_t)Param::GetInt(Param::holdDuty1);
+    contactor_aux0_hold_duty_pct      = (uint8_t)Param::GetInt(Param::holdDuty0);
+    contactor_aux1_hold_duty_pct      = (uint8_t)Param::GetInt(Param::holdDuty1);
     engage_time_ms      = (uint16_t)Param::GetInt(Param::engageTime);
 
     battery_capacity_dah  = (uint16_t)(Param::GetFloat(Param::batteryCapacity) * 10.0f);
@@ -434,8 +434,8 @@ UDSErr_t BMSUDSServer::handle_rdbi(UDSRDBIArgs_t *a) {
     if (did == 0xD400) { RDBI_COPY_U8(can_node_id); }
     if (did == 0xD401) { RDBI_COPY_U16(pwm_frequency_hz); }
     if (did == 0xD402) { RDBI_COPY_U8(engage_duty_pct); }
-    if (did == 0xD403) { RDBI_COPY_U8(hold_duty0_pct); }
-    if (did == 0xD404) { RDBI_COPY_U8(hold_duty1_pct); }
+    if (did == 0xD403) { RDBI_COPY_U8(contactor_aux0_hold_duty_pct); }
+    if (did == 0xD404) { RDBI_COPY_U8(contactor_aux1_hold_duty_pct); }
     if (did == 0xD405) { RDBI_COPY_U16(engage_time_ms); }
 
     // Battery / timing config
@@ -566,12 +566,12 @@ UDSErr_t BMSUDSServer::handle_wdbi(UDSWDBIArgs_t *a) {
     if (did == 0xD402) { WR_U8(engage_duty_pct, 1);
         if (engage_duty_pct > 100) return UDS_NRC_RequestOutOfRange;
         Param::SetInt(Param::engageDuty, engage_duty_pct); parm_save(); return UDS_OK; }
-    if (did == 0xD403) { WR_U8(hold_duty0_pct, 1);
-        if (hold_duty0_pct > 100) return UDS_NRC_RequestOutOfRange;
-        Param::SetInt(Param::holdDuty0, hold_duty0_pct); parm_save(); return UDS_OK; }
-    if (did == 0xD404) { WR_U8(hold_duty1_pct, 1);
-        if (hold_duty1_pct > 100) return UDS_NRC_RequestOutOfRange;
-        Param::SetInt(Param::holdDuty1, hold_duty1_pct); parm_save(); return UDS_OK; }
+    if (did == 0xD403) { WR_U8(contactor_aux0_hold_duty_pct, 1);
+        if (contactor_aux0_hold_duty_pct > 100) return UDS_NRC_RequestOutOfRange;
+        Param::SetInt(Param::holdDuty0, contactor_aux0_hold_duty_pct); parm_save(); return UDS_OK; }
+    if (did == 0xD404) { WR_U8(contactor_aux1_hold_duty_pct, 1);
+        if (contactor_aux1_hold_duty_pct > 100) return UDS_NRC_RequestOutOfRange;
+        Param::SetInt(Param::holdDuty1, contactor_aux1_hold_duty_pct); parm_save(); return UDS_OK; }
     if (did == 0xD405) { WR_U16(engage_time_ms, 2);
         Param::SetInt(Param::engageTime, engage_time_ms); parm_save(); return UDS_OK; }
 

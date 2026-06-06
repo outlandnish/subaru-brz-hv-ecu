@@ -111,8 +111,8 @@ private:
     uint8_t  can_node_id;                // DID 0xD400
     uint16_t pwm_frequency_hz;           // DID 0xD401
     uint8_t  engage_duty_pct;            // DID 0xD402
-    uint8_t  hold_duty0_pct;             // DID 0xD403
-    uint8_t  hold_duty1_pct;             // DID 0xD404
+    uint8_t  contactor_aux0_hold_duty_pct; // DID 0xD403
+    uint8_t  contactor_aux1_hold_duty_pct; // DID 0xD404
     uint16_t engage_time_ms;             // DID 0xD405
     // Battery / timing config — DID 0xD500 range
     uint16_t battery_capacity_dah;       // DID 0xD500  (0.1 Ah units)
