@@ -66,17 +66,39 @@ BMSUDSServer::BMSUDSServer(BatteryManagementSystem *bms_, IVTShunt *ivt_,
     ocp_charge_ma      = (uint32_t)(cc.max_charge_current_a * 1000.0f);
     ocp_discharge_ma   = (uint32_t)(cc.max_charge_current_a * 1000.0f);
 
-    k_role[0] = 0x00; // K1 = Main negative
-    k_role[1] = 0x01; // K2 = Main positive
-    k_role[2] = 0x02; // K3 = Pre-charge
-    k_role[3] = 0x03; // K4 = Charge path
+    aux_contactor_mode   = (uint8_t)Param::GetInt(Param::auxContactorMode);
+    aux_pin0_role        = (uint8_t)Param::GetInt(Param::auxPin0Role);
+    aux_pin1_role        = (uint8_t)Param::GetInt(Param::auxPin1Role);
+    nacs_pin             = (uint8_t)Param::GetInt(Param::nacsPin);
+    nacs_dc_level        = (uint8_t)Param::GetInt(Param::nacsDcLevel);
 
-    precharge_completion_mv  = 5000;   // 5 V delta
-    precharge_timeout_ms_val = 10000;  // 10 s
-    precharge_min_voltage_mv = 0;
+    precharge_completion_mv  = (uint16_t)Param::GetInt(Param::prechargeCompletionMv);
+    precharge_timeout_ms_val = (uint16_t)Param::GetInt(Param::prechargeTimeoutMs);
+    precharge_min_voltage_mv = (uint16_t)Param::GetInt(Param::prechargeMinVoltageMv);
 
     chain0_module_count = can_cfg->chain0_modules;
     chain1_module_count = can_cfg->chain1_modules;
+    bcc0_device_type    = (uint8_t)Param::GetInt(Param::bcc0DeviceType);
+    bcc1_device_type    = (uint8_t)Param::GetInt(Param::bcc1DeviceType);
+
+    can_node_id         = (uint8_t)Param::GetInt(Param::canNodeId);
+    pwm_frequency_hz    = (uint16_t)Param::GetInt(Param::pwmFrequency);
+    engage_duty_pct     = (uint8_t)Param::GetInt(Param::engageDuty);
+    hold_duty0_pct      = (uint8_t)Param::GetInt(Param::holdDuty0);
+    hold_duty1_pct      = (uint8_t)Param::GetInt(Param::holdDuty1);
+    engage_time_ms      = (uint16_t)Param::GetInt(Param::engageTime);
+
+    battery_capacity_dah  = (uint16_t)(Param::GetFloat(Param::batteryCapacity) * 10.0f);
+    min_soc_pct_x10       = (uint16_t)(Param::GetFloat(Param::minSocPercent)   * 10.0f);
+    max_soc_pct_x10       = (uint16_t)(Param::GetFloat(Param::maxSocPercent)   * 10.0f);
+    init_soc_pct_x10      = (uint16_t)(Param::GetFloat(Param::initSocPercent)  * 10.0f);
+    balance_timer_min     = (uint16_t)Param::GetInt(Param::balanceTimerMin);
+    measure_interval_ms   = (uint16_t)Param::GetInt(Param::measureInterval);
+    balance_hv_off_min    = (uint16_t)Param::GetInt(Param::balanceHvOffMin);
+    ivt_configured        = (uint8_t)Param::GetInt(Param::ivtConfigured);
+    precharge_check_int_ms = (uint16_t)Param::GetInt(Param::prechargeCheckInt);
+    comm_timeout_ms_val   = (uint16_t)Param::GetInt(Param::commTimeout);
+    fault_check_int_ms    = (uint16_t)Param::GetInt(Param::faultCheckInt);
 }
 
 // ── init ─────────────────────────────────────────────────────────────────────
@@ -323,10 +345,6 @@ UDSErr_t BMSUDSServer::handle_rdbi(UDSRDBIArgs_t *a) {
         if (did == 0xD005) { RDBI_COPY_U16((uint16_t)(vmax - vmin)); }
         if (did == 0xD006) { RDBI_COPY_U16((uint16_t)vavg); }
     }
-    if (did == 0xD007 || did == 0xD008) {
-        // Temp not yet wired from BCC readback — return 0x7FFF (invalid)
-        RDBI_COPY_I16(0x7FFF);
-    }
     if (did == 0xD009) {  // SOC
         RDBI_COPY_U16((uint16_t)(bms->get_soc_precise() * 100.0f));
     }
@@ -340,14 +358,6 @@ UDSErr_t BMSUDSServer::handle_rdbi(UDSRDBIArgs_t *a) {
         for (uint8_t i = 0; i < cnt; i++) {
             uint16_t mv_be = __builtin_bswap16((uint16_t)(vbuf[i] / 1000));
             if (a->copy(&srv, &mv_be, 2) != 2) return UDS_NRC_ResponseTooLong;
-        }
-        return UDS_OK;
-    }
-    if (did == 0xD00C) {  // Temps_All — return 0x7FFF × N×3
-        const uint8_t total = can_cfg->chain0_modules + can_cfg->chain1_modules;
-        const uint16_t invalid_be = __builtin_bswap16(0x7FFF);
-        for (uint8_t i = 0; i < total * 3; i++) {
-            if (a->copy(&srv, &invalid_be, 2) != 2) return UDS_NRC_ResponseTooLong;
         }
         return UDS_OK;
     }
@@ -404,15 +414,42 @@ UDSErr_t BMSUDSServer::handle_rdbi(UDSRDBIArgs_t *a) {
     if (did == 0xD118) { RDBI_COPY_U32(ocp_charge_ma); }
     if (did == 0xD119) { RDBI_COPY_U32(ocp_discharge_ma); }
 
-    // Contactor config
-    if (did >= 0xD200 && did <= 0xD203) { RDBI_COPY_U8(k_role[did - 0xD200]); }
+    // Auxiliary contactor config
+    if (did == 0xD200) { RDBI_COPY_U8(aux_contactor_mode); }
+    if (did == 0xD201) { RDBI_COPY_U8(aux_pin0_role); }
+    if (did == 0xD202) { RDBI_COPY_U8(aux_pin1_role); }
+    if (did == 0xD203) { RDBI_COPY_U8(nacs_pin); }
     if (did == 0xD204) { RDBI_COPY_U16(precharge_completion_mv); }
     if (did == 0xD205) { RDBI_COPY_U16(precharge_timeout_ms_val); }
     if (did == 0xD206) { RDBI_COPY_U16(precharge_min_voltage_mv); }
+    if (did == 0xD207) { RDBI_COPY_U8(nacs_dc_level); }
 
-    // Chain config
+    // Chain / BCC device config
     if (did == 0xD300) { RDBI_COPY_U8(chain0_module_count); }
     if (did == 0xD301) { RDBI_COPY_U8(chain1_module_count); }
+    if (did == 0xD302) { RDBI_COPY_U8(bcc0_device_type); }
+    if (did == 0xD303) { RDBI_COPY_U8(bcc1_device_type); }
+
+    // Hardware config — PWM contactor, CAN node
+    if (did == 0xD400) { RDBI_COPY_U8(can_node_id); }
+    if (did == 0xD401) { RDBI_COPY_U16(pwm_frequency_hz); }
+    if (did == 0xD402) { RDBI_COPY_U8(engage_duty_pct); }
+    if (did == 0xD403) { RDBI_COPY_U8(hold_duty0_pct); }
+    if (did == 0xD404) { RDBI_COPY_U8(hold_duty1_pct); }
+    if (did == 0xD405) { RDBI_COPY_U16(engage_time_ms); }
+
+    // Battery / timing config
+    if (did == 0xD500) { RDBI_COPY_U16(battery_capacity_dah); }
+    if (did == 0xD501) { RDBI_COPY_U16(min_soc_pct_x10); }
+    if (did == 0xD502) { RDBI_COPY_U16(max_soc_pct_x10); }
+    if (did == 0xD503) { RDBI_COPY_U16(init_soc_pct_x10); }
+    if (did == 0xD504) { RDBI_COPY_U16(balance_timer_min); }
+    if (did == 0xD505) { RDBI_COPY_U16(measure_interval_ms); }
+    if (did == 0xD506) { RDBI_COPY_U16(balance_hv_off_min); }
+    if (did == 0xD507) { RDBI_COPY_U8(ivt_configured); }
+    if (did == 0xD508) { RDBI_COPY_U16(precharge_check_int_ms); }
+    if (did == 0xD509) { RDBI_COPY_U16(comm_timeout_ms_val); }
+    if (did == 0xD50A) { RDBI_COPY_U16(fault_check_int_ms); }
 
     return UDS_NRC_RequestOutOfRange;
 }
@@ -434,60 +471,133 @@ UDSErr_t BMSUDSServer::handle_wdbi(UDSWDBIArgs_t *a) {
 #define WR_I16(field, need) do { if (len < (need)) return UDS_NRC_IncorrectMessageLengthOrInvalidFormat; (field) = (int16_t)((d[0] << 8) | d[1]); } while(0)
 #define WR_U32(field, need) do { if (len < (need)) return UDS_NRC_IncorrectMessageLengthOrInvalidFormat; (field) = ((uint32_t)d[0]<<24)|((uint32_t)d[1]<<16)|((uint32_t)d[2]<<8)|d[3]; } while(0)
 
-    if (did == 0xD100) { WR_U8(balance_mode, 1);
+    if (did == 0xD100) {
+        WR_U8(balance_mode, 1);
         if (balance_mode > 2) return UDS_NRC_RequestOutOfRange;
         can_cfg->balance_mode = (BalanceMode)balance_mode;
-        return UDS_OK;
+        Param::SetInt(Param::balanceMode, balance_mode); parm_save(); return UDS_OK;
     }
-    if (did == 0xD101) { WR_U16(balance_delta_mv, 2); return UDS_OK; }
-    if (did == 0xD102) { WR_U16(balance_abs_mv,   2); return UDS_OK; }
-    if (did == 0xD103) { WR_U16(balance_inhibit_pack_mv, 2); return UDS_OK; }
-    if (did == 0xD104) { WR_U16(balance_min_cell_mv,     2); return UDS_OK; }
-
+    if (did == 0xD101) { WR_U16(balance_delta_mv, 2);
+        Param::SetInt(Param::balanceDeltaMv, balance_delta_mv); parm_save(); return UDS_OK; }
+    if (did == 0xD102) { WR_U16(balance_abs_mv, 2);
+        Param::SetInt(Param::balanceAbsMv, balance_abs_mv); parm_save(); return UDS_OK; }
+    if (did == 0xD103) { WR_U16(balance_inhibit_pack_mv, 2);
+        Param::SetInt(Param::balanceInhibitPackMv, balance_inhibit_pack_mv); parm_save(); return UDS_OK; }
+    if (did == 0xD104) { WR_U16(balance_min_cell_mv, 2);
+        Param::SetInt(Param::balanceMinCellMv, balance_min_cell_mv); parm_save(); return UDS_OK; }
     if (did == 0xD105) {
         WR_U16(soh_x100, 2);
         if (soh_x100 > 10000) return UDS_NRC_RequestOutOfRange;
         can_cfg->soh_percent_x100 = soh_x100;
-        return UDS_OK;
+        Param::SetInt(Param::sohX100, soh_x100); parm_save(); return UDS_OK;
     }
-    if (did == 0xD106) { WR_U8(soc_method, 1);
+    if (did == 0xD106) {
+        WR_U8(soc_method, 1);
         if (soc_method > 1) return UDS_NRC_RequestOutOfRange;
-        return UDS_OK;
+        Param::SetInt(Param::socMethod, soc_method); parm_save(); return UDS_OK;
     }
 
-    if (did == 0xD110) { WR_U16(ovp_threshold_mv, 2); return UDS_OK; }
-    if (did == 0xD111) { WR_U16(ovp_warning_mv,   2); return UDS_OK; }
-    if (did == 0xD112) { WR_U16(uvp_threshold_mv, 2); return UDS_OK; }
-    if (did == 0xD113) { WR_U16(uvp_warning_mv,   2); return UDS_OK; }
-    if (did == 0xD114) { WR_I16(otp_threshold_cdeg, 2); return UDS_OK; }
-    if (did == 0xD115) { WR_I16(otp_warning_cdeg,   2); return UDS_OK; }
-    if (did == 0xD116) { WR_I16(utp_threshold_cdeg, 2); return UDS_OK; }
-    if (did == 0xD117) { WR_I16(utp_warning_cdeg,   2); return UDS_OK; }
-    if (did == 0xD118) { WR_U32(ocp_charge_ma,    4); return UDS_OK; }
-    if (did == 0xD119) { WR_U32(ocp_discharge_ma, 4); return UDS_OK; }
+    if (did == 0xD110) { WR_U16(ovp_threshold_mv, 2);
+        Param::SetInt(Param::ovpThresholdMv, ovp_threshold_mv); parm_save(); return UDS_OK; }
+    if (did == 0xD111) { WR_U16(ovp_warning_mv, 2);
+        Param::SetInt(Param::ovpWarningMv, ovp_warning_mv); parm_save(); return UDS_OK; }
+    if (did == 0xD112) { WR_U16(uvp_threshold_mv, 2);
+        Param::SetInt(Param::uvpThresholdMv, uvp_threshold_mv); parm_save(); return UDS_OK; }
+    if (did == 0xD113) { WR_U16(uvp_warning_mv, 2);
+        Param::SetInt(Param::uvpWarningMv, uvp_warning_mv); parm_save(); return UDS_OK; }
+    if (did == 0xD114) { WR_I16(otp_threshold_cdeg, 2);
+        Param::SetInt(Param::otpThresholdCdeg, otp_threshold_cdeg); parm_save(); return UDS_OK; }
+    if (did == 0xD115) { WR_I16(otp_warning_cdeg, 2);
+        Param::SetInt(Param::otpWarningCdeg, otp_warning_cdeg); parm_save(); return UDS_OK; }
+    if (did == 0xD116) { WR_I16(utp_threshold_cdeg, 2);
+        Param::SetInt(Param::utpThresholdCdeg, utp_threshold_cdeg); parm_save(); return UDS_OK; }
+    if (did == 0xD117) { WR_I16(utp_warning_cdeg, 2);
+        Param::SetInt(Param::utpWarningCdeg, utp_warning_cdeg); parm_save(); return UDS_OK; }
+    if (did == 0xD118) { WR_U32(ocp_charge_ma, 4);
+        Param::SetInt(Param::ocpChargeMa, (int32_t)ocp_charge_ma); parm_save(); return UDS_OK; }
+    if (did == 0xD119) { WR_U32(ocp_discharge_ma, 4);
+        Param::SetInt(Param::ocpDischargeMa, (int32_t)ocp_discharge_ma); parm_save(); return UDS_OK; }
 
-    if (did >= 0xD200 && did <= 0xD203) {
-        WR_U8(k_role[did - 0xD200], 1);
-        if (k_role[did - 0xD200] > 0x04 && k_role[did - 0xD200] != 0xFF)
-            return UDS_NRC_RequestOutOfRange;
-        return UDS_OK;
-    }
-    if (did == 0xD204) { WR_U16(precharge_completion_mv,  2); return UDS_OK; }
-    if (did == 0xD205) { WR_U16(precharge_timeout_ms_val, 2); return UDS_OK; }
-    if (did == 0xD206) { WR_U16(precharge_min_voltage_mv, 2); return UDS_OK; }
+    if (did == 0xD200) { WR_U8(aux_contactor_mode, 1);
+        if (aux_contactor_mode > 1) return UDS_NRC_RequestOutOfRange;
+        Param::SetInt(Param::auxContactorMode, aux_contactor_mode); parm_save(); return UDS_OK; }
+    if (did == 0xD201) { WR_U8(aux_pin0_role, 1);
+        if (aux_pin0_role > 1) return UDS_NRC_RequestOutOfRange;
+        Param::SetInt(Param::auxPin0Role, aux_pin0_role); parm_save(); return UDS_OK; }
+    if (did == 0xD202) { WR_U8(aux_pin1_role, 1);
+        if (aux_pin1_role > 1) return UDS_NRC_RequestOutOfRange;
+        Param::SetInt(Param::auxPin1Role, aux_pin1_role); parm_save(); return UDS_OK; }
+    if (did == 0xD203) { WR_U8(nacs_pin, 1);
+        Param::SetInt(Param::nacsPin, nacs_pin); parm_save(); return UDS_OK; }
+    if (did == 0xD204) { WR_U16(precharge_completion_mv, 2);
+        Param::SetInt(Param::prechargeCompletionMv, precharge_completion_mv); parm_save(); return UDS_OK; }
+    if (did == 0xD205) { WR_U16(precharge_timeout_ms_val, 2);
+        Param::SetInt(Param::prechargeTimeoutMs, precharge_timeout_ms_val); parm_save(); return UDS_OK; }
+    if (did == 0xD206) { WR_U16(precharge_min_voltage_mv, 2);
+        Param::SetInt(Param::prechargeMinVoltageMv, precharge_min_voltage_mv); parm_save(); return UDS_OK; }
+    if (did == 0xD207) { WR_U8(nacs_dc_level, 1);
+        if (nacs_dc_level > 1) return UDS_NRC_RequestOutOfRange;
+        Param::SetInt(Param::nacsDcLevel, nacs_dc_level); parm_save(); return UDS_OK; }
 
     if (did == 0xD300) {
         WR_U8(chain0_module_count, 1);
         if (chain0_module_count > 15) return UDS_NRC_RequestOutOfRange;
         can_cfg->chain0_modules = chain0_module_count;
-        return UDS_OK;
+        Param::SetInt(Param::bcc0DeviceCount, chain0_module_count); parm_save(); return UDS_OK;
     }
     if (did == 0xD301) {
         WR_U8(chain1_module_count, 1);
         if (chain1_module_count > 15) return UDS_NRC_RequestOutOfRange;
         can_cfg->chain1_modules = chain1_module_count;
-        return UDS_OK;
+        Param::SetInt(Param::bcc1DeviceCount, chain1_module_count); parm_save(); return UDS_OK;
     }
+    if (did == 0xD302) { WR_U8(bcc0_device_type, 1);
+        if (bcc0_device_type > 1) return UDS_NRC_RequestOutOfRange;
+        Param::SetInt(Param::bcc0DeviceType, bcc0_device_type); parm_save(); return UDS_OK; }
+    if (did == 0xD303) { WR_U8(bcc1_device_type, 1);
+        if (bcc1_device_type > 1) return UDS_NRC_RequestOutOfRange;
+        Param::SetInt(Param::bcc1DeviceType, bcc1_device_type); parm_save(); return UDS_OK; }
+
+    if (did == 0xD400) { WR_U8(can_node_id, 1);
+        if (can_node_id < 1 || can_node_id > 127) return UDS_NRC_RequestOutOfRange;
+        Param::SetInt(Param::canNodeId, can_node_id); parm_save(); return UDS_OK; }
+    if (did == 0xD401) { WR_U16(pwm_frequency_hz, 2);
+        Param::SetInt(Param::pwmFrequency, pwm_frequency_hz); parm_save(); return UDS_OK; }
+    if (did == 0xD402) { WR_U8(engage_duty_pct, 1);
+        if (engage_duty_pct > 100) return UDS_NRC_RequestOutOfRange;
+        Param::SetInt(Param::engageDuty, engage_duty_pct); parm_save(); return UDS_OK; }
+    if (did == 0xD403) { WR_U8(hold_duty0_pct, 1);
+        if (hold_duty0_pct > 100) return UDS_NRC_RequestOutOfRange;
+        Param::SetInt(Param::holdDuty0, hold_duty0_pct); parm_save(); return UDS_OK; }
+    if (did == 0xD404) { WR_U8(hold_duty1_pct, 1);
+        if (hold_duty1_pct > 100) return UDS_NRC_RequestOutOfRange;
+        Param::SetInt(Param::holdDuty1, hold_duty1_pct); parm_save(); return UDS_OK; }
+    if (did == 0xD405) { WR_U16(engage_time_ms, 2);
+        Param::SetInt(Param::engageTime, engage_time_ms); parm_save(); return UDS_OK; }
+
+    if (did == 0xD500) { WR_U16(battery_capacity_dah, 2);
+        Param::SetFloat(Param::batteryCapacity, battery_capacity_dah / 10.0f); parm_save(); return UDS_OK; }
+    if (did == 0xD501) { WR_U16(min_soc_pct_x10, 2);
+        Param::SetFloat(Param::minSocPercent, min_soc_pct_x10 / 10.0f); parm_save(); return UDS_OK; }
+    if (did == 0xD502) { WR_U16(max_soc_pct_x10, 2);
+        Param::SetFloat(Param::maxSocPercent, max_soc_pct_x10 / 10.0f); parm_save(); return UDS_OK; }
+    if (did == 0xD503) { WR_U16(init_soc_pct_x10, 2);
+        Param::SetFloat(Param::initSocPercent, init_soc_pct_x10 / 10.0f); parm_save(); return UDS_OK; }
+    if (did == 0xD504) { WR_U16(balance_timer_min, 2);
+        Param::SetInt(Param::balanceTimerMin, balance_timer_min); parm_save(); return UDS_OK; }
+    if (did == 0xD505) { WR_U16(measure_interval_ms, 2);
+        Param::SetInt(Param::measureInterval, measure_interval_ms); parm_save(); return UDS_OK; }
+    if (did == 0xD506) { WR_U16(balance_hv_off_min, 2);
+        Param::SetInt(Param::balanceHvOffMin, balance_hv_off_min); parm_save(); return UDS_OK; }
+    if (did == 0xD507) { WR_U8(ivt_configured, 1);
+        if (ivt_configured > 1) return UDS_NRC_RequestOutOfRange;
+        Param::SetInt(Param::ivtConfigured, ivt_configured); parm_save(); return UDS_OK; }
+    if (did == 0xD508) { WR_U16(precharge_check_int_ms, 2);
+        Param::SetInt(Param::prechargeCheckInt, precharge_check_int_ms); parm_save(); return UDS_OK; }
+    if (did == 0xD509) { WR_U16(comm_timeout_ms_val, 2);
+        Param::SetInt(Param::commTimeout, comm_timeout_ms_val); parm_save(); return UDS_OK; }
+    if (did == 0xD50A) { WR_U16(fault_check_int_ms, 2);
+        Param::SetInt(Param::faultCheckInt, fault_check_int_ms); parm_save(); return UDS_OK; }
 
 #undef WR_U8
 #undef WR_U16

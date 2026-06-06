@@ -95,12 +95,37 @@ private:
     int16_t  utp_warning_cdeg;           // DID 0xD117
     uint32_t ocp_charge_ma;              // DID 0xD118
     uint32_t ocp_discharge_ma;           // DID 0xD119
-    uint8_t  k_role[4];                  // DID 0xD200–0xD203
+    uint8_t  aux_contactor_mode;         // DID 0xD200
+    uint8_t  aux_pin0_role;              // DID 0xD201
+    uint8_t  aux_pin1_role;              // DID 0xD202
+    uint8_t  nacs_pin;                   // DID 0xD203
     uint16_t precharge_completion_mv;    // DID 0xD204
     uint16_t precharge_timeout_ms_val;   // DID 0xD205
     uint16_t precharge_min_voltage_mv;   // DID 0xD206
+    uint8_t  nacs_dc_level;             // DID 0xD207
     uint8_t  chain0_module_count;        // DID 0xD300
     uint8_t  chain1_module_count;        // DID 0xD301
+    uint8_t  bcc0_device_type;           // DID 0xD302
+    uint8_t  bcc1_device_type;           // DID 0xD303
+    // Hardware config — DID 0xD400 range
+    uint8_t  can_node_id;                // DID 0xD400
+    uint16_t pwm_frequency_hz;           // DID 0xD401
+    uint8_t  engage_duty_pct;            // DID 0xD402
+    uint8_t  hold_duty0_pct;             // DID 0xD403
+    uint8_t  hold_duty1_pct;             // DID 0xD404
+    uint16_t engage_time_ms;             // DID 0xD405
+    // Battery / timing config — DID 0xD500 range
+    uint16_t battery_capacity_dah;       // DID 0xD500  (0.1 Ah units)
+    uint16_t min_soc_pct_x10;           // DID 0xD501  (0.1 % units)
+    uint16_t max_soc_pct_x10;           // DID 0xD502
+    uint16_t init_soc_pct_x10;          // DID 0xD503
+    uint16_t balance_timer_min;          // DID 0xD504
+    uint16_t measure_interval_ms;        // DID 0xD505
+    uint16_t balance_hv_off_min;         // DID 0xD506
+    uint8_t  ivt_configured;             // DID 0xD507
+    uint16_t precharge_check_int_ms;     // DID 0xD508
+    uint16_t comm_timeout_ms_val;        // DID 0xD509
+    uint16_t fault_check_int_ms;         // DID 0xD50A
 
     // iso14229 server callback
     static UDSErr_t uds_callback(UDSServer_t *srv, UDSEvent_t evt, void *arg);
