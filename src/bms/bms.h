@@ -174,7 +174,6 @@ class BatteryManagementSystem {
 #ifdef BMS_M3_CAN
   CANBus *m3_can;
   M3CANManager *m3_mgr;
-  bool pcs_enabled;   // runtime: send PCS messages (0x20A/0x22A/0x212/0x3B2/0x2B2)
 #endif
 
   // NeoPixel status LEDs

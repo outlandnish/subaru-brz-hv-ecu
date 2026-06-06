@@ -77,7 +77,6 @@ BMSUDSServer::BMSUDSServer(BatteryManagementSystem *bms_, IVTShunt *ivt_,
 
     chain0_module_count = can_cfg->chain0_modules;
     chain1_module_count = can_cfg->chain1_modules;
-    pcs_enabled = (uint8_t)Param::GetInt(Param::pcsEnabled);
 }
 
 // ── init ─────────────────────────────────────────────────────────────────────
@@ -414,7 +413,6 @@ UDSErr_t BMSUDSServer::handle_rdbi(UDSRDBIArgs_t *a) {
     // Chain config
     if (did == 0xD300) { RDBI_COPY_U8(chain0_module_count); }
     if (did == 0xD301) { RDBI_COPY_U8(chain1_module_count); }
-    if (did == 0xD302) { RDBI_COPY_U8(pcs_enabled); }
 
     return UDS_NRC_RequestOutOfRange;
 }
@@ -488,13 +486,6 @@ UDSErr_t BMSUDSServer::handle_wdbi(UDSWDBIArgs_t *a) {
         WR_U8(chain1_module_count, 1);
         if (chain1_module_count > 15) return UDS_NRC_RequestOutOfRange;
         can_cfg->chain1_modules = chain1_module_count;
-        return UDS_OK;
-    }
-    if (did == 0xD302) {
-        WR_U8(pcs_enabled, 1);
-        if (pcs_enabled > 1) return UDS_NRC_RequestOutOfRange;
-        Param::SetInt(Param::pcsEnabled, pcs_enabled);
-        parm_save();
         return UDS_OK;
     }
 

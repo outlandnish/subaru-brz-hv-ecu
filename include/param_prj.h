@@ -38,9 +38,6 @@
     /* IVT-S Configuration */ \
     PARAM_ENTRY("IVT", ivtConfigured, "0=unconfigured, 1=configured", 0, 1, 0, 60) \
     \
-    /* M3 CAN / PCS Configuration */ \
-    PARAM_ENTRY("M3CAN", pcsEnabled, "0=disabled, 1=enabled", 0, 1, 0, 61) \
-    \
     /* HV System Configuration */ \
     PARAM_ENTRY("HV", prechargeCheckInt, "ms", 10, 1000, 100, 32) \
     \

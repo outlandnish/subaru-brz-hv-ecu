@@ -71,7 +71,6 @@ BatteryManagementSystem::BatteryManagementSystem(BatteryCellControllerConfig *co
 #ifdef BMS_M3_CAN
   m3_can = nullptr;
   m3_mgr = nullptr;
-  pcs_enabled = (bool)Param::GetInt(Param::pcsEnabled);
 #endif
 
   // Initialize SOC tracking
